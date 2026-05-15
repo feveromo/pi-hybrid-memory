@@ -1,0 +1,59 @@
+# Command and tool reference
+
+This page is a compact inventory. See [Usage](usage.md) for workflows.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `/hmemory` | Show memory stats and storage roots. |
+| `/hmemory-config` | Show active hybrid-memory tuning from Pi settings. |
+| `/hmemory-search <query>` | Search memory records. |
+| `/hmemory-show <id>` | Show one memory record. |
+| `/hmemory-forget <id> [status]` | Mark a memory `stale`, `done`, or `superseded`. |
+| `/hmemory-done <id>` | Mark a memory/work item done. |
+| `/hmemory-pin <id>` | Pin an active memory record for prioritized retrieval. |
+| `/hmemory-unpin <id>` | Unpin a memory record. |
+| `/hmemory-work <description>` | Create an active project work item. |
+| `/hmemory-review` | Review/pin/stale/done records in a TUI overlay. |
+| `/hmemory-prune [maxActiveRecaps]` | Prune duplicate/old session-recapped memories and maybe create a rollup. |
+| `/hmemory-repomap` | Rebuild the repo map for the current project. |
+| `/hmemory-repo <query>` | Search repo-map files, symbols, imports, commands, tools, and hooks. |
+| `/hmemory-health` | Show memory health, duplicate hints, and repo-map staleness. |
+| `/hmemory-dashboard [full]` | Open a styled memory/repo dashboard overlay. |
+| `/hmemory-widget [off]` | Show or hide a compact memory widget above the editor. |
+| `/hmemory-context` | Regenerate/show the compact working context file. |
+| `/hmemory-ingest-session [current\|recent N\|path]` | Import memory from Pi session JSONL files. |
+| `/hmemory-refresh [N]` | Rebuild repo map and import current + N recent project sessions. |
+| `/hmemory-bootstrap [maxSessions]` | One-time deeper project backfill from prior sessions. |
+| `/hmemory-files` | Show storage paths. |
+
+## Tools
+
+| Tool | Purpose |
+| --- | --- |
+| `hybrid_memory_remember` | Store a typed user/project memory record. |
+| `hybrid_memory_search` | Search local memory records by lexical/path/symbol relevance. |
+| `hybrid_memory_forget` | Mark a memory record done, stale, or superseded. |
+| `hybrid_memory_import_sessions` | Import compact memory from Pi session JSONL files. |
+| `hybrid_memory_refresh_context` | Rebuild repo map and optionally import recent session recaps. |
+| `hybrid_memory_bootstrap_project` | Rebuild repo map, import prior project sessions, prune, and roll up. |
+| `hybrid_memory_stats` | Show memory counts and paths. |
+| `hybrid_memory_build_repomap` | Build or refresh the repo map. |
+
+## Record kinds
+
+- `preference`
+- `decision`
+- `project_fact`
+- `codebase_note`
+- `recipe`
+- `work_item`
+- `session_recap`
+
+## Status values
+
+- `active`
+- `done`
+- `superseded`
+- `stale`

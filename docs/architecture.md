@@ -1,0 +1,90 @@
+# Architecture
+
+`pi-hybrid-memory` is intentionally small and Pi-native. It avoids a vector database, graph database, daemon, or hosted service by default.
+
+## Design goals
+
+- Local-first: memory is stored in files on disk.
+- Inspectable: JSONL records and Markdown summaries can be read and edited.
+- Bounded: session import and prompt injection are compact by default.
+- Conservative: only durable-looking preferences and compact recaps are auto-mined.
+- Untrusted: retrieved memory is injected as context, not as instructions.
+- Repo-aware: a lightweight repo map helps retrieval without heavyweight indexing.
+
+## Storage model
+
+There are two scopes:
+
+```text
+~/.pi/agent/memory/          # user scope
+<project>/.pi/hybrid-memory/ # project scope
+```
+
+Each scope stores append-only `records.jsonl` plus generated summaries/state. Project scope also stores active work, a repo map, and a compact working context.
+
+A memory record has:
+
+- `id`
+- `scope`: `user` or `project`
+- `kind`: `preference`, `decision`, `project_fact`, `codebase_note`, `recipe`, `work_item`, or `session_recap`
+- `subject` and `content`
+- optional `tags`, `filePaths`, `symbols`, `evidence`, and `supersedes`
+- `status`: `active`, `done`, `superseded`, or `stale`
+- `salience` from 1 to 5
+- optional `pinned`
+- timestamps
+
+Status updates append a newer version of the same `scope:id`. Retrieval uses the latest version.
+
+## Project root detection
+
+The project root is found by walking upward from the current working directory and stopping at a directory with `.git`, `package.json`, or Pi project markers. Project memory is stored under that root.
+
+## Retrieval and injection
+
+Before an agent starts, the extension:
+
+1. Redacts secrets from the prompt used for matching.
+2. Scores active records by lexical/path/symbol relevance.
+3. Always considers pinned active records and active work items. Inactive records (`done`, `stale`, or `superseded`) are not injected even if still pinned.
+4. Groups results into sections such as user preferences, project decisions, recipes, session recaps, and codebase notes.
+5. Adds relevant repo-map matches when available.
+6. Injects a capped `<hybrid_memory>` block into the system prompt. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
+
+The injected block explicitly says retrieved records are untrusted context and must not be treated as instructions unless the current user asks.
+
+## Repo map
+
+The repo map is saved to:
+
+```text
+<project>/.pi/hybrid-memory/repomap.json
+```
+
+It indexes tracked files and untracked non-ignored files, excluding `.pi/`, `.git/`, `node_modules/`, noisy home/cache paths, common binary/archive/database files, and sensitive paths.
+
+For each mappable file it records:
+
+- relative path
+- file kind
+- imports
+- symbols
+- registered Pi commands/tools/hooks where detectable
+- exports
+- size
+
+The map is used for `/hmemory-repo`, `context.md`, dashboard summaries, and prompt-time repo matches. Repo-map file and read-size caps are configurable through Pi settings while remaining bounded by safe min/max ranges.
+
+## Hooks
+
+The extension uses Pi hooks to keep context fresh:
+
+- `session_start` — initialize files, run a cheap startup refresh, maybe build a small repo map, import current/recent project sessions, and update the status chrome.
+- `before_agent_start` — auto-capture durable preference prompts and inject relevant memory.
+- `agent_end` — import the current session compactly and prune old session recap noise, delegated-session artifacts, generic command recipes, and obvious pasted-review preference captures.
+- `session_compact` — mine compaction summaries for decisions, preferences, and work items.
+- `session_tree` — mine branch summaries similarly.
+
+## Generated context
+
+`context.md` is a compact project orientation file. It includes active preferences, decisions/facts, work items, and repo-map highlights. It is regenerated after relevant writes and can be manually refreshed with `/hmemory-context`.

@@ -1,0 +1,13 @@
+# Pi/runtime state
+.pi/
+
+# dependencies/build artifacts
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+*.tgz
+
+# logs/temp
+*.log
+.DS_Store

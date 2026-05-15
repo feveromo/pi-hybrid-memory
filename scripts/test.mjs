@@ -1,0 +1,42 @@
+import { readFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+
+const source = readFileSync(new URL('../extensions/hybrid-memory.ts', import.meta.url), 'utf8');
+
+assert.match(source, /sk-\(\?:ant-\|proj-\)\?\[A-Za-z0-9_-\]\{16,\}/, 'redaction should cover plain sk-... plus sk-ant-/sk-proj- keys');
+assert.doesNotMatch(source.match(/function durablePreferencePrompt[\s\S]*?\n}/)?.[0] ?? '', /\bi want\b/i, 'session preference import should not treat broad "i want" as durable');
+assert.match(source, /function hybridMemoryConfig/, 'tuning knobs should load from Pi settings');
+assert.match(source, /const max = boundedNumber\(args\.trim\(\), hybridMemoryConfig\(ctx\.cwd\)\.pruneActiveSessionRecaps, 3, 100\);/, '/hmemory-prune should use boundedNumber with the configured default for invalid input');
+assert.match(source, /\["ls-files", "--others", "--exclude-standard"\]/, 'repo map should include untracked non-ignored git files');
+assert.match(source, /added after repo map generation/, 'repo map staleness should detect newly added files');
+assert.match(source, /slice\(0, config\.repoMapFileLimit\)/, 'repo-map file cap should be configurable');
+assert.match(source, /size <= config\.repoMapReadMaxBytes/, 'repo-map read-size cap should be configurable');
+assert.match(source, /!path\.startsWith\("\.pi\/"\)/, 'repo map should avoid indexing project .pi memory state');
+assert.match(source, /REPO_NOISE_TOP_LEVEL/, 'repo map should define a noise filter for home-directory caches');
+assert.match(source, /isNoisyRepoPath\(path\)/, 'repo map should skip noisy home/cache paths before injection');
+assert.match(source, /function isHomeRepoNoise/, 'repo map should apply extra root-aware filtering when cwd is the home directory');
+assert.match(source, /HOME_REPO_NOISE_TOP_LEVEL/, 'home repo maps should not index Dev, node_modules, backups, or personal folders');
+assert.match(source, /id_rsa\|id_dsa\|id_ecdsa\|id_ed25519\|adbkey/, 'sensitive path filter should cover Android adb keys');
+assert.match(source, /\.npmrc\|\\\.netrc\|\\\.emulator_console_auth_token/, 'sensitive path filter should cover common home credential files');
+assert.match(source, /function autoCapturePromptMemory/, 'durable preference prompts should be auto-captured before the agent starts');
+assert.match(source, /function looksLikePastedReviewPrompt/, 'pasted reviews should not be auto-captured as preferences');
+assert.match(source, /function isUsefulProjectCommand/, 'session command recipes should skip generic inspection commands');
+assert.match(source, /function isActiveRecord/, 'memory visibility should share one active-status predicate');
+assert.match(source, /isActiveRecord\(x\.record\) && \(x\.record\.pinned \|\| x\.score > 0\)/, 'pinned records should only be searchable while active');
+assert.match(source, /function readFirstJsonlObject/, 'project session filtering should read only the first JSONL object');
+assert.doesNotMatch(source, /readJsonlObjects\(file\)\[0\]/, 'project session filtering should not parse whole session files');
+assert.match(source, /repoMapStalenessCached\(ctx\.cwd\)/, 'status chrome should use cached repo-map staleness');
+assert.match(source, /pi\.on\("agent_end"/, 'current session should be re-imported after each agent turn');
+assert.match(source, /stableId\("preference", content, `auto-prompt:\$\{content\}`\)/, 'auto-captured and session-imported preferences should dedupe by content');
+assert.match(source, /const MAX_INJECT_CHARS = 4200;/, 'memory injection should stay lean by default');
+assert.match(source, /config\.maxInjectChars/, 'memory injection cap should be configurable');
+assert.match(source, /config\.injectSectionLimits\[title\]/, 'per-section injection limits should be configurable');
+assert.match(source, /"Relevant Session Recaps": 2/, 'session recap injection should be tightly capped by default');
+assert.match(source, /Prior session \(\$\{location\}\)/, 'session recaps should use compact location labels instead of raw cwd prefixes');
+assert.match(source, /DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS = 8/, 'turn/startup refresh should prune old session recap noise by default');
+assert.match(source, /pruneMemory\(cwd, hybridMemoryConfig\(cwd\)\.autoPruneActiveSessionRecaps\)/, 'turn refresh should use the configured auto-prune recap cap');
+assert.match(source, /pruneMemory\(cwd, config\.autoPruneActiveSessionRecaps\)/, 'startup refresh should use the configured auto-prune recap cap');
+assert.doesNotMatch(source, /function extractSymbols\(/, 'unused extractSymbols wrapper should stay removed');
+assert.match(source, /finally \{\n        updateMemoryChrome\(ctx\);\n      \}/, 'long-running commands should restore the memory chrome after temporary statuses');
+
+console.log('pi-hybrid-memory tests ok');

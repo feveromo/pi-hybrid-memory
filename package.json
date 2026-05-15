@@ -1,0 +1,45 @@
+{
+  "name": "pi-hybrid-memory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first hybrid JSONL memory and repo-map extension for Pi.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "memory",
+    "agent-memory",
+    "local-first"
+  ],
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/feveromo/pi-hybrid-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/feveromo/pi-hybrid-memory/issues"
+  },
+  "homepage": "https://github.com/feveromo/pi-hybrid-memory#readme",
+  "files": [
+    "extensions/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": ["./extensions/hybrid-memory.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "node scripts/test.mjs && node scripts/behavior-test.mjs",
+    "test:source": "node scripts/test.mjs",
+    "test:fixture": "node scripts/fixture-test.mjs",
+    "validate": "npm test && npm run test:fixture && npm run smoke:load",
+    "smoke:load": "pi --no-session -e . -p '/hmemory-health'",
+    "smoke": "pi --no-session -e . -p --model openai-codex/gpt-5.4-mini 'Reply exactly: pi-hybrid-memory-ok'"
+  }
+}
