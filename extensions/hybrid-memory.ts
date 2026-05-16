@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -1523,18 +1524,71 @@ function dashboardMetric(theme: any, label: string, value: string | number, colo
   return `${theme.fg("dim", label.padEnd(8))} ${theme.fg(color, String(value).padStart(4))}`;
 }
 
+function memoryKindIcon(kind: MemoryKind | string | undefined) {
+  switch (kind) {
+    case "preference": return "💜";
+    case "decision":
+    case "project_fact": return "◆";
+    case "codebase_note": return "🧩";
+    case "recipe": return "🧾";
+    case "work_item": return "◎";
+    case "session_recap": return "◌";
+    default: return "▪";
+  }
+}
+
+function memoryTheme(theme: any, color: string, text: string) {
+  return theme?.fg ? theme.fg(color, text) : text;
+}
+
+function memoryBold(theme: any, text: string) {
+  return theme?.bold ? theme.bold(text) : text;
+}
+
+function memoryToolText(text: string) {
+  return new Text(text, 0, 0);
+}
+
+function memoryToolCall(theme: any, action: string, details = "") {
+  const title = memoryTheme(theme, "toolTitle", memoryBold(theme, action));
+  return memoryToolText(details ? `${title} ${details}` : title);
+}
+
+function memoryScopeChip(theme: any, scope?: string) {
+  const text = scope === "user" ? "user" : scope === "project" ? "project" : "memory";
+  return memoryTheme(theme, text === "project" ? "accent" : "muted", text);
+}
+
+function memoryKindChip(theme: any, kind?: string) {
+  const text = `${memoryKindIcon(kind)} ${String(kind ?? "memory").replace(/_/g, " ")}`;
+  return memoryTheme(theme, "muted", text);
+}
+
+function memoryToolPreview(value: unknown, max = 96) {
+  return compactText(redactSecrets(String(value ?? "")), max);
+}
+
+function memoryToolResultText(result: any) {
+  const first = Array.isArray(result?.content) ? result.content[0] : undefined;
+  return first?.type === "text" ? redactSecrets(first.text) : "";
+}
+
+function memoryRecordToolLine(theme: any, r: MemoryRecord, maxSubject = 72, showId = false) {
+  const pin = r.pinned ? `${memoryTheme(theme, "warning", "📌")} ` : "";
+  const id = showId ? `${memoryTheme(theme, "accent", memoryToolPreview(recordKey(r), 44))} ` : "";
+  return `${pin}${memoryScopeChip(theme, r.scope)} ${memoryKindChip(theme, r.kind)} ${id}${memoryTheme(theme, "dim", `\"${memoryToolPreview(r.subject, maxSubject)}\"`)}`;
+}
+
+function memoryToolFilesLine(theme: any, filePaths?: string[]) {
+  const files = (sanitizeFilePaths(filePaths) ?? []).slice(0, 4);
+  return files.length ? `${memoryTheme(theme, "dim", "files")} ${files.join("  ")}` : "";
+}
+
 const REVIEW_LIST_ROWS = 11;
 const REVIEW_DETAIL_ROWS = 5;
 
 function reviewKindLabel(r: MemoryRecord) {
-  const icon = r.kind === "decision" || r.kind === "project_fact" ? "◆"
-    : r.kind === "preference" ? "◇"
-      : r.kind === "codebase_note" ? "■"
-        : r.kind === "recipe" ? "≡"
-          : r.kind === "work_item" ? "◎"
-            : r.kind === "session_recap" ? "○"
-              : "▪";
-  return `${padVisible(icon, 2)}${r.kind.replace(/_/g, " ")}`;
+  return `${padVisible(memoryKindIcon(r.kind), 2)}${r.kind.replace(/_/g, " ")}`;
 }
 
 function displayContent(r: MemoryRecord) {
@@ -1584,12 +1638,12 @@ function buildReviewLines(records: MemoryRecord[], selected: number, _theme: any
     const absolute = start + i;
     const isSelected = absolute === selected;
     const marker = isSelected ? warp.cyan("▸") : warp.faint(" ");
-    const pin = padVisible(r.pinned ? warp.pink("●") : "", 2);
-    const labelText = padVisible(reviewKindLabel(r), 16);
+    const pin = padVisible(r.pinned ? warp.pink("📌") : "", 2);
+    const labelText = padVisible(reviewKindLabel(r), 18);
     const label = isSelected ? warp.cyan(labelText) : warp.dim(labelText);
     const scopeText = padVisible(r.scope, 7);
     const scope = r.scope === "project" ? warp.blue(scopeText) : warp.purple(scopeText);
-    const preview = isSelected ? warp.green(reviewPreview(r, inner - 35)) : reviewPreview(r, inner - 35);
+    const preview = isSelected ? warp.green(reviewPreview(r, inner - 37)) : reviewPreview(r, inner - 37);
     lines.push(row(`${marker} ${pin} ${label} ${scope} ${preview}`));
   }
 
@@ -1722,8 +1776,13 @@ export default function (pi: ExtensionAPI) {
     const counts = activeCounts(ctx.cwd);
     const stale = repoMapStalenessCached(ctx.cwd);
     const icon = stale.stale ? ctx.ui.theme.fg("warning", "🧠") : ctx.ui.theme.fg("accent", "🧠");
+    const active = `${ctx.ui.theme.fg("success", String(counts.active))} ${ctx.ui.theme.fg("dim", "active")}`;
+    const user = counts.user ? `${ctx.ui.theme.fg("muted", String(counts.user))} ${ctx.ui.theme.fg("dim", "user")}` : "";
+    const project = counts.project ? `${ctx.ui.theme.fg("accent", String(counts.project))} ${ctx.ui.theme.fg("dim", "project")}` : "";
+    const scopes = [user, project].filter(Boolean).join(" • ");
+    const pinned = counts.pinned ? ` • ${ctx.ui.theme.fg("warning", `📌 ${counts.pinned} pinned`)}` : "";
     const repo = stale.stale ? ctx.ui.theme.fg("warning", "repo stale") : ctx.ui.theme.fg("success", "repo fresh");
-    ctx.ui.setStatus("hybrid-memory", `${icon} ${counts.active}a/${counts.project}p • ${repo}`);
+    ctx.ui.setStatus("hybrid-memory", `${icon} ${active}${scopes ? ` • ${scopes}` : ""}${pinned} • ${repo}`);
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -2078,6 +2137,26 @@ export default function (pi: ExtensionAPI) {
       updateMemoryChrome(ctx);
       return { content: [{ type: "text", text: `Remembered ${recordKey(stored)} in ${scope} memory.` }], details: stored };
     },
+    renderCall(args, theme) {
+      const scope = String(args.scope ?? "project");
+      const kind = String(args.kind ?? "memory");
+      const pin = args.pinned ? `${memoryTheme(theme, "warning", "📌")} ` : "";
+      const details = `${pin}${memoryScopeChip(theme, scope)} ${memoryKindChip(theme, kind)} ${memoryTheme(theme, "dim", `"${memoryToolPreview(args.subject, 72)}"`)}`;
+      return memoryToolCall(theme, "🧠 remember", details);
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🧠 remembering memory…"));
+      const rec = result.details as MemoryRecord | undefined;
+      if (!rec) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
+      let text = `${memoryTheme(theme, "success", "✓ remembered")} ${memoryRecordToolLine(theme, rec)}`;
+      if (expanded) {
+        text += `\n${memoryTheme(theme, "dim", "id")} ${memoryTheme(theme, "accent", recordKey(rec))}`;
+        text += `\n${memoryTheme(theme, "dim", "content")} ${memoryToolPreview(displayContent(rec), 180)}`;
+        const files = memoryToolFilesLine(theme, rec.filePaths);
+        if (files) text += `\n${files}`;
+      }
+      return memoryToolText(text);
+    },
   });
 
   pi.registerTool({
@@ -2094,6 +2173,22 @@ export default function (pi: ExtensionAPI) {
         content: [{ type: "text", text: hits.length ? hits.map((h) => `${recordKey(h.record)} [${h.record.kind}, score ${h.score}]: ${redactSecrets(h.record.content)}`).join("\n") : "No hybrid memory hits." }],
         details: { hits },
       };
+    },
+    renderCall(args, theme) {
+      const limit = args.limit ? memoryTheme(theme, "dim", `limit ${args.limit}`) : "";
+      return memoryToolCall(theme, "🔎 search", `${memoryTheme(theme, "accent", `"${memoryToolPreview(args.query, 80)}"`)} ${limit}`.trim());
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🔎 searching memory…"));
+      const hits = ((result.details as any)?.hits ?? []) as Array<{ record: MemoryRecord; score: number }>;
+      if (!hits.length) return memoryToolText(memoryTheme(theme, "dim", "No hybrid memory hits."));
+      let text = `${memoryTheme(theme, "success", `🔎 ${hits.length} hit${hits.length === 1 ? "" : "s"}`)}`;
+      for (const hit of hits.slice(0, expanded ? 8 : 3)) {
+        text += `\n${memoryRecordToolLine(theme, hit.record, 76)} ${memoryTheme(theme, "dim", `score ${hit.score}`)}`;
+        if (expanded) text += `\n  ${memoryTheme(theme, "dim", "id")} ${memoryTheme(theme, "accent", recordKey(hit.record))}`;
+      }
+      if (!expanded && hits.length > 3) text += `\n${memoryTheme(theme, "dim", `… ${hits.length - 3} more`)}`;
+      return memoryToolText(text);
     },
   });
 
@@ -2113,6 +2208,25 @@ export default function (pi: ExtensionAPI) {
       if (params.note) patch.evidence = { note: redactSecrets(params.note) };
       const result = updateRecord(ctx.cwd, params.id, patch, params.scope as MemoryScope | undefined);
       return { content: [{ type: "text", text: updateResultText(result, params.id, `-> ${status}`) }], details: result };
+    },
+    renderCall(args, theme) {
+      const status = String(args.status ?? "stale");
+      const scope = args.scope ? `${memoryScopeChip(theme, String(args.scope))} ` : "";
+      return memoryToolCall(theme, "🧹 forget", `${scope}${memoryTheme(theme, "accent", memoryToolPreview(args.id, 72))} ${memoryTheme(theme, "dim", `→ ${status}`)}`);
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🧹 updating memory…"));
+      const details = result.details as UpdateRecordResult | undefined;
+      if (details?.updated) {
+        let text = `${memoryTheme(theme, "success", "✓ updated")} ${memoryRecordToolLine(theme, details.updated)}`;
+        if (expanded && details.updated.evidence?.note) text += `\n${memoryTheme(theme, "dim", "note")} ${memoryToolPreview(details.updated.evidence.note, 160)}`;
+        return memoryToolText(text);
+      }
+      if (details?.ambiguous?.length) {
+        const ids = details.ambiguous.map(recordKey).join(" or ");
+        return memoryToolText(`${memoryTheme(theme, "warning", "Ambiguous memory id")}: ${memoryTheme(theme, "accent", ids)}`);
+      }
+      return memoryToolText(memoryTheme(theme, "error", memoryToolResultText(result) || "No record found."));
     },
   });
 
@@ -2135,6 +2249,21 @@ export default function (pi: ExtensionAPI) {
       const result = importSessions(ctx.cwd, files.filter((f) => existsSync(f)));
       updateMemoryChrome(ctx);
       return { content: [{ type: "text", text: `Imported sessions: scanned ${result.scanned}, extracted ${result.extracted}, wrote ${result.written}.` }], details: result };
+    },
+    renderCall(args, theme) {
+      const source = args.sessionPath ? memoryToolPreview(args.sessionPath, 72) : `${args.recent ?? 10} recent${args.projectOnly === false ? "" : " project"}`;
+      return memoryToolCall(theme, "📥 import sessions", memoryTheme(theme, "muted", source));
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "📥 importing session memory…"));
+      const details = result.details as ReturnType<typeof importSessions> | undefined;
+      if (!details) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
+      let text = `${memoryTheme(theme, "success", "📥 imported")} ${memoryTheme(theme, "accent", String(details.written))} ${memoryTheme(theme, "muted", "writes")} ${memoryTheme(theme, "dim", `(scanned ${details.scanned}, extracted ${details.extracted})`)}`;
+      if (expanded && details.sessionFiles?.length) {
+        for (const file of details.sessionFiles.slice(0, 6)) text += `\n${memoryTheme(theme, "dim", memoryToolPreview(file, 120))}`;
+        if (details.sessionFiles.length > 6) text += `\n${memoryTheme(theme, "dim", `… ${details.sessionFiles.length - 6} more files`)}`;
+      }
+      return memoryToolText(text);
     },
   });
 
@@ -2162,6 +2291,19 @@ export default function (pi: ExtensionAPI) {
       updateMemoryChrome(ctx);
       return { content: [{ type: "text", text: `Refreshed repo map (${map.files.length} files)${importResult ? ` and session memory (${importResult.written} writes)` : ""}.` }], details: { repoMap: { path: join(projectMemoryDir(ctx.cwd), REPOMAP), files: map.files.length }, importResult } };
     },
+    renderCall(args, theme) {
+      const sessions = args.importSessions === false ? "repo only" : `${args.recentSessions ?? 5} sessions`;
+      return memoryToolCall(theme, "🔄 refresh context", memoryTheme(theme, "muted", sessions));
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🔄 refreshing memory context…"));
+      const details = result.details as { repoMap?: { path: string; files: number }; importResult?: ReturnType<typeof importSessions> } | undefined;
+      if (!details?.repoMap) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
+      let text = `${memoryTheme(theme, "success", "🔄 refreshed")} ${memoryTheme(theme, "accent", `${details.repoMap.files} files`)}`;
+      if (details.importResult) text += ` ${memoryTheme(theme, "dim", `• ${details.importResult.written} session writes`)}`;
+      if (expanded) text += `\n${memoryTheme(theme, "dim", details.repoMap.path)}`;
+      return memoryToolText(text);
+    },
   });
 
   pi.registerTool({
@@ -2178,6 +2320,20 @@ export default function (pi: ExtensionAPI) {
       updateMemoryChrome(ctx);
       return { content: [{ type: "text", text: `Bootstrapped project memory: repo map ${result.repoFiles} files; sessions scanned ${result.sessions.scanned}, extracted ${result.sessions.extracted}, wrote ${result.sessions.written}; pruned ${result.prune.staleMarked}.` }], details: result };
     },
+    renderCall(args, theme) {
+      return memoryToolCall(theme, "🌱 bootstrap project", memoryTheme(theme, "muted", `${args.maxSessions ?? 250} sessions max`));
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🌱 bootstrapping project memory…"));
+      const details = result.details as BootstrapResult | undefined;
+      if (!details) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
+      let text = `${memoryTheme(theme, "success", "🌱 bootstrapped")} ${memoryTheme(theme, "accent", `${details.repoFiles} repo files`)} ${memoryTheme(theme, "dim", `• ${details.sessions.written} writes • ${details.prune.staleMarked} pruned`)}`;
+      if (expanded) {
+        text += `\n${memoryTheme(theme, "dim", `sessions scanned ${details.sessions.scanned}/${details.scannedAvailable}, extracted ${details.sessions.extracted}`)}`;
+        if (details.prune.rollupCreated) text += `\n${memoryTheme(theme, "dim", "rollup")} ${memoryTheme(theme, "accent", recordKey(details.prune.rollupCreated))}`;
+      }
+      return memoryToolText(text);
+    },
   });
 
   pi.registerTool({
@@ -2192,6 +2348,27 @@ export default function (pi: ExtensionAPI) {
       const config = publicHybridMemoryConfig(hybridMemoryConfig(ctx.cwd));
       return { content: [{ type: "text", text: `Hybrid memory: ${records.length} records\nuser: ${p.user}\nproject: ${p.project}` }], details: { paths: p, total: records.length, byKind, config } };
     },
+    renderCall(args, theme) {
+      return memoryToolCall(theme, "📊 stats", memoryTheme(theme, "muted", "memory health"));
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "📊 reading memory stats…"));
+      const details = result.details as { paths?: ReturnType<typeof paths>; total?: number; byKind?: Record<string, number>; config?: Record<string, unknown> } | undefined;
+      if (!details) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
+      const total = details.total ?? 0;
+      const topKinds = kindEnum
+        .map((k) => [k, details.byKind?.[k] ?? 0] as const)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${memoryKindIcon(k)} ${n}`)
+        .join("  ");
+      let text = `${memoryTheme(theme, "success", "📊 hybrid memory")} ${memoryTheme(theme, "accent", `${total} records`)}${topKinds ? ` ${memoryTheme(theme, "dim", topKinds)}` : ""}`;
+      if (expanded && details.paths) {
+        text += `\n${memoryTheme(theme, "dim", "user")} ${details.paths.user}`;
+        text += `\n${memoryTheme(theme, "dim", "project")} ${details.paths.project}`;
+        if (details.config?.maxInjectChars) text += `\n${memoryTheme(theme, "dim", `inject cap ${details.config.maxInjectChars}`)}`;
+      }
+      return memoryToolText(text);
+    },
   });
 
   pi.registerTool({
@@ -2204,6 +2381,17 @@ export default function (pi: ExtensionAPI) {
       const map = buildRepoMap(ctx.cwd);
       updateMemoryChrome(ctx);
       return { content: [{ type: "text", text: `Repo map built for ${map.root}: ${map.files.length} files.` }], details: { path: join(projectMemoryDir(ctx.cwd), REPOMAP), files: map.files.length } };
+    },
+    renderCall(args, theme) {
+      return memoryToolCall(theme, "🗺️ repo map", memoryTheme(theme, "muted", "build cache"));
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🗺️ building repo map…"));
+      const details = result.details as { path?: string; files?: number } | undefined;
+      if (!details) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
+      let text = `${memoryTheme(theme, "success", "🗺️ repo map built")} ${memoryTheme(theme, "accent", `${details.files ?? 0} files`)}`;
+      if (expanded && details.path) text += `\n${memoryTheme(theme, "dim", details.path)}`;
+      return memoryToolText(text);
     },
   });
 }
