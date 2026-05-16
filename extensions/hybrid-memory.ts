@@ -1783,6 +1783,13 @@ export default function (pi: ExtensionAPI) {
     const pinned = counts.pinned ? ` • ${ctx.ui.theme.fg("warning", `📌 ${counts.pinned} pinned`)}` : "";
     const repo = stale.stale ? ctx.ui.theme.fg("warning", "repo stale") : ctx.ui.theme.fg("success", "repo fresh");
     ctx.ui.setStatus("hybrid-memory", `${icon} ${active}${scopes ? ` • ${scopes}` : ""}${pinned} • ${repo}`);
+
+    const compactActive = ctx.ui.theme.fg("success", `${counts.active}a`);
+    const compactUser = counts.user ? ctx.ui.theme.fg("muted", `u${counts.user}`) : "";
+    const compactProject = counts.project ? ctx.ui.theme.fg("accent", `p${counts.project}`) : "";
+    const compactPinned = counts.pinned ? ctx.ui.theme.fg("warning", `pin${counts.pinned}`) : "";
+    const compactRepo = stale.stale ? ctx.ui.theme.fg("warning", "stale") : ctx.ui.theme.fg("success", "fresh");
+    ctx.ui.setStatus("hybrid-memory-compact", [compactActive, compactUser, compactProject, compactPinned, compactRepo].filter(Boolean).join(" • "));
   }
 
   pi.on("session_start", async (_event, ctx) => {
