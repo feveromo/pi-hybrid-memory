@@ -34,6 +34,10 @@ assert.match(source, /config\.injectSectionLimits\[title\]/, 'per-section inject
 assert.match(source, /function visibleWidth/, 'TUI padding should use terminal cell widths for Unicode icons');
 assert.match(source, /const labelText = padVisible\(reviewKindLabel\(r\), 16\)/, 'memory review kind labels should use a fixed-width column');
 assert.match(source, /const pin = padVisible\(r\.pinned \? warp\.pink\("●"\) : "", 2\)/, 'memory review pin marker should use a fixed-width non-emoji slot');
+assert.match(source, /const REVIEW_LIST_ROWS = 11;/, 'memory review should use a fixed-size list viewport');
+assert.match(source, /for \(let i = 0; i < REVIEW_LIST_ROWS; i\+\+\)/, 'memory review should pad list rows to keep overlay height stable');
+assert.match(source, /const fileText = files\.length \? files\.join\("  "\) : warp\.dim\("—"\);/, 'memory review should reserve the files row to keep overlay height stable');
+assert.match(source, /for \(let i = 0; i < REVIEW_DETAIL_ROWS; i\+\+\) lines\.push\(row\(detailRows\[i\] \?\? ""\)\);/, 'memory review should render a fixed-size details footer');
 assert.doesNotMatch(source, /reviewKindLabel\(r\)\.padEnd/, 'memory review should not pad icon labels by raw string length');
 assert.match(source, /"Relevant Session Recaps": 2/, 'session recap injection should be tightly capped by default');
 assert.match(source, /Prior session \(\$\{location\}\)/, 'session recaps should use compact location labels instead of raw cwd prefixes');

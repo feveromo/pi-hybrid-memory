@@ -1523,6 +1523,9 @@ function dashboardMetric(theme: any, label: string, value: string | number, colo
   return `${theme.fg("dim", label.padEnd(8))} ${theme.fg(color, String(value).padStart(4))}`;
 }
 
+const REVIEW_LIST_ROWS = 11;
+const REVIEW_DETAIL_ROWS = 5;
+
 function reviewKindLabel(r: MemoryRecord) {
   const icon = r.kind === "decision" || r.kind === "project_fact" ? "◆"
     : r.kind === "preference" ? "◇"
@@ -1562,14 +1565,22 @@ function buildReviewLines(records: MemoryRecord[], selected: number, _theme: any
   ];
   if (!records.length) {
     lines.push(row(warp.dim("No active memories.")));
+    for (let i = 1; i < REVIEW_LIST_ROWS; i++) lines.push(row(""));
+    lines.push(divider());
+    for (let i = 0; i < REVIEW_DETAIL_ROWS; i++) lines.push(row(""));
     lines.push(border("╰", "─", "╯"));
     return lines;
   }
 
-  const windowSize = 11;
+  const windowSize = REVIEW_LIST_ROWS;
   const start = Math.max(0, Math.min(Math.max(0, records.length - windowSize), selected - Math.floor(windowSize / 2)));
   const visible = records.slice(start, start + windowSize);
-  for (const [i, r] of visible.entries()) {
+  for (let i = 0; i < REVIEW_LIST_ROWS; i++) {
+    const r = visible[i];
+    if (!r) {
+      lines.push(row(""));
+      continue;
+    }
     const absolute = start + i;
     const isSelected = absolute === selected;
     const marker = isSelected ? warp.cyan("▸") : warp.faint(" ");
@@ -1582,16 +1593,21 @@ function buildReviewLines(records: MemoryRecord[], selected: number, _theme: any
     lines.push(row(`${marker} ${pin} ${label} ${scope} ${preview}`));
   }
 
+  lines.push(divider());
   const current = records[selected];
-  if (current) {
-    lines.push(divider());
+  const detailRows = current ? (() => {
     const status = current.status ?? "active";
-    lines.push(row(`${warp.cyan("selected")} ${warp.green(current.scope)} ${warp.dim("/")} ${warp.purple(current.kind.replace(/_/g, " "))} ${warp.dim("/")} ${status === "active" ? warp.green(status) : warp.amber(status)}`));
-    lines.push(row(`${warp.dim("subject ")} ${redactSecrets(compactText(current.subject, inner - 10))}`));
-    lines.push(row(`${warp.dim("content ")} ${redactSecrets(compactText(displayContent(current), inner - 10))}`));
-    if (current.filePaths?.length) lines.push(row(`${warp.dim("files   ")} ${(sanitizeFilePaths(current.filePaths) ?? []).slice(0, 3).join("  ")}`));
-    lines.push(row(`${warp.dim("id      ")} ${warp.faint(recordKey(current))}`));
-  }
+    const files = (sanitizeFilePaths(current.filePaths) ?? []).slice(0, 3);
+    const fileText = files.length ? files.join("  ") : warp.dim("—");
+    return [
+      `${warp.cyan("selected")} ${warp.green(current.scope)} ${warp.dim("/")} ${warp.purple(current.kind.replace(/_/g, " "))} ${warp.dim("/")} ${status === "active" ? warp.green(status) : warp.amber(status)}`,
+      `${warp.dim("subject ")} ${redactSecrets(compactText(current.subject, inner - 10))}`,
+      `${warp.dim("content ")} ${redactSecrets(compactText(displayContent(current), inner - 10))}`,
+      `${warp.dim("files   ")} ${fileText}`,
+      `${warp.dim("id      ")} ${warp.faint(recordKey(current))}`,
+    ];
+  })() : [warp.dim("No active memory selected."), "", "", "", ""];
+  for (let i = 0; i < REVIEW_DETAIL_ROWS; i++) lines.push(row(detailRows[i] ?? ""));
   lines.push(border("╰", "─", "╯"));
   return lines;
 }
