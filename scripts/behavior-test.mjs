@@ -24,6 +24,7 @@ const globalNodeModules = execFileSync('npm', ['root', '-g'], { encoding: 'utf8'
 const piRoot = join(globalNodeModules, '@earendil-works', 'pi-coding-agent');
 linkPackage(moduleRoot, '@earendil-works/pi-ai', join(piRoot, 'node_modules', '@earendil-works', 'pi-ai'));
 linkPackage(moduleRoot, '@earendil-works/pi-coding-agent', piRoot);
+linkPackage(moduleRoot, '@earendil-works/pi-tui', join(piRoot, 'node_modules', '@earendil-works', 'pi-tui'));
 linkPackage(moduleRoot, 'typebox', join(piRoot, 'node_modules', 'typebox'));
 const moduleFile = join(moduleRoot, 'hybrid-memory.ts');
 copyFileSync(join(repoRoot, 'extensions', 'hybrid-memory.ts'), moduleFile);
