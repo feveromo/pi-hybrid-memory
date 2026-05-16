@@ -1444,10 +1444,46 @@ const warp = {
   faint: (s: string) => rgb(91, 97, 121, s),
 };
 
+function charCellWidth(char: string) {
+  const cp = char.codePointAt(0) ?? 0;
+  if (cp === 0 || cp === 0x200d || cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0;
+  if ((cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x1ab0 && cp <= 0x1aff) || (cp >= 0x1dc0 && cp <= 0x1dff) || (cp >= 0xfe00 && cp <= 0xfe0f)) return 0;
+  if (cp >= 0x1100 && (
+    cp <= 0x115f || cp === 0x2329 || cp === 0x232a ||
+    (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe10 && cp <= 0xfe19) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff)
+  )) return 2;
+  return 1;
+}
+
+function visibleWidth(text: string) {
+  let width = 0;
+  for (const char of stripAnsi(text)) width += charCellWidth(char);
+  return width;
+}
+
+function sliceVisible(text: string, width: number) {
+  let out = "";
+  let used = 0;
+  for (const char of stripAnsi(text)) {
+    const next = used + charCellWidth(char);
+    if (next > width) break;
+    out += char;
+    used = next;
+  }
+  return out;
+}
+
 function clip(text: string, width: number) {
   const plain = stripAnsi(text);
-  if (plain.length <= width) return text;
-  return plain.slice(0, Math.max(0, width - 1)) + "…";
+  if (visibleWidth(plain) <= width) return text;
+  return sliceVisible(plain, Math.max(0, width - 1)) + "…";
 }
 
 function activeCounts(cwd: string) {
@@ -1466,12 +1502,11 @@ function sparkline(value: number, max: number, width = 10) {
 }
 
 function padVisible(text: string, width: number) {
-  const visible = stripAnsi(text).length;
-  return text + " ".repeat(Math.max(0, width - visible));
+  return text + " ".repeat(Math.max(0, width - visibleWidth(text)));
 }
 
 function centerVisible(text: string, width: number) {
-  const visible = stripAnsi(text).length;
+  const visible = visibleWidth(text);
   return " ".repeat(Math.max(0, Math.floor((width - visible) / 2))) + text;
 }
 
@@ -1489,8 +1524,14 @@ function dashboardMetric(theme: any, label: string, value: string | number, colo
 }
 
 function reviewKindLabel(r: MemoryRecord) {
-  const icon = r.kind === "decision" ? "◆" : r.kind === "preference" ? "✦" : r.kind === "recipe" ? "⌘" : r.kind === "work_item" ? "◎" : r.kind === "session_recap" ? "◌" : "•";
-  return `${icon} ${r.kind.replace(/_/g, " ")}`;
+  const icon = r.kind === "decision" || r.kind === "project_fact" ? "◆"
+    : r.kind === "preference" ? "◇"
+      : r.kind === "codebase_note" ? "■"
+        : r.kind === "recipe" ? "≡"
+          : r.kind === "work_item" ? "◎"
+            : r.kind === "session_recap" ? "○"
+              : "▪";
+  return `${padVisible(icon, 2)}${r.kind.replace(/_/g, " ")}`;
 }
 
 function displayContent(r: MemoryRecord) {
@@ -1532,11 +1573,13 @@ function buildReviewLines(records: MemoryRecord[], selected: number, _theme: any
     const absolute = start + i;
     const isSelected = absolute === selected;
     const marker = isSelected ? warp.cyan("▸") : warp.faint(" ");
-    const pin = r.pinned ? warp.pink("📌") : "  ";
-    const label = isSelected ? warp.cyan(reviewKindLabel(r).padEnd(16)) : warp.dim(reviewKindLabel(r).padEnd(16));
-    const scope = r.scope === "project" ? warp.blue("project") : warp.purple("user");
+    const pin = padVisible(r.pinned ? warp.pink("●") : "", 2);
+    const labelText = padVisible(reviewKindLabel(r), 16);
+    const label = isSelected ? warp.cyan(labelText) : warp.dim(labelText);
+    const scopeText = padVisible(r.scope, 7);
+    const scope = r.scope === "project" ? warp.blue(scopeText) : warp.purple(scopeText);
     const preview = isSelected ? warp.green(reviewPreview(r, inner - 35)) : reviewPreview(r, inner - 35);
-    lines.push(row(`${marker} ${pin} ${label} ${scope}  ${preview}`));
+    lines.push(row(`${marker} ${pin} ${label} ${scope} ${preview}`));
   }
 
   const current = records[selected];

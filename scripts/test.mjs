@@ -31,6 +31,10 @@ assert.match(source, /stableId\("preference", content, `auto-prompt:\$\{content\
 assert.match(source, /const MAX_INJECT_CHARS = 4200;/, 'memory injection should stay lean by default');
 assert.match(source, /config\.maxInjectChars/, 'memory injection cap should be configurable');
 assert.match(source, /config\.injectSectionLimits\[title\]/, 'per-section injection limits should be configurable');
+assert.match(source, /function visibleWidth/, 'TUI padding should use terminal cell widths for Unicode icons');
+assert.match(source, /const labelText = padVisible\(reviewKindLabel\(r\), 16\)/, 'memory review kind labels should use a fixed-width column');
+assert.match(source, /const pin = padVisible\(r\.pinned \? warp\.pink\("●"\) : "", 2\)/, 'memory review pin marker should use a fixed-width non-emoji slot');
+assert.doesNotMatch(source, /reviewKindLabel\(r\)\.padEnd/, 'memory review should not pad icon labels by raw string length');
 assert.match(source, /"Relevant Session Recaps": 2/, 'session recap injection should be tightly capped by default');
 assert.match(source, /Prior session \(\$\{location\}\)/, 'session recaps should use compact location labels instead of raw cwd prefixes');
 assert.match(source, /DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS = 8/, 'turn/startup refresh should prune old session recap noise by default');
