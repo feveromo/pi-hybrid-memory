@@ -36,10 +36,10 @@
     "typebox": "*"
   },
   "scripts": {
-    "test": "node scripts/test.mjs && node scripts/behavior-test.mjs",
+    "test": "node scripts/test.mjs && node scripts/behavior-test.mjs && npm run test:fixture",
     "test:source": "node scripts/test.mjs",
     "test:fixture": "node scripts/fixture-test.mjs",
-    "validate": "npm test && npm run test:fixture && npm run smoke:load",
+    "validate": "npm test && npm run smoke:load",
     "smoke:load": "pi --no-session --no-extensions -e . -p '/hmemory-health'",
     "smoke": "pi --no-session --no-extensions -e . -p --model openai-codex/gpt-5.4-mini 'Reply exactly: pi-hybrid-memory-ok'"
   }

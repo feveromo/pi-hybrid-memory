@@ -1,6 +1,9 @@
 # Pi/runtime state
 .pi/
 
+# Clawpatch
+.clawpatch/
+
 # dependencies/build artifacts
 node_modules/
 dist/
