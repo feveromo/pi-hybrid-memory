@@ -22,6 +22,8 @@ assert.match(source, /\.npmrc\|\\\.netrc\|\\\.emulator_console_auth_token/, 'sen
 assert.match(source, /function autoCapturePromptMemory/, 'durable preference prompts should be auto-captured before the agent starts');
 assert.match(source, /function looksLikePastedReviewPrompt/, 'pasted reviews should not be auto-captured as preferences');
 assert.match(source, /function isUsefulProjectCommand/, 'session command recipes should skip generic inspection commands');
+assert.match(source, /function staleCodebaseNoteReason/, 'codebase notes should become stale when referenced source files change');
+assert.match(source, /staleCodebaseNotesOnFileChange: true/, 'codebase-note staleness should be enabled by default');
 assert.match(source, /function isActiveRecord/, 'memory visibility should share one active-status predicate');
 assert.match(source, /isActiveRecord\(x\.record\) && \(x\.record\.pinned \|\| x\.score > 0\)/, 'pinned records should only be searchable while active');
 assert.match(source, /function readFirstJsonlObject/, 'project session filtering should read only the first JSONL object');

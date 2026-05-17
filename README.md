@@ -16,6 +16,7 @@ It provides a small, inspectable memory layer for Pi agents:
 - Lightweight auto-capture for durable preference prompts as they are submitted, plus compact current-session import/pruning after each agent turn.
 - Secret/path redaction before records are stored or injected, including plain `sk-...`, `sk-ant-...`, and `sk-proj-...` style keys.
 - Retrieved memory is injected as untrusted context, not high-priority instructions.
+- Codebase notes are marked stale during pruning when their referenced files are changed or removed.
 - Opt-in model audit/cleanup through `/hmemory-audit`, using the selected Pi model to propose validated append-only memory changes like dedupe, merge, stale, pin, and rewrite.
 - Pi compaction/branch summaries can be mined into durable memories through Pi session hooks.
 
@@ -114,4 +115,4 @@ npm run validate
 
 ## Notes / future work
 
-Still intentionally simple: no vector DB, no daemon, and no external service by default. `/hmemory-audit` is explicit and uses whatever Pi model/provider you selected, with a redacted bounded packet and append-only validated changes. Startup/turn auto-refresh is deliberately bounded, compact, local, and lightly configurable through Pi settings; use `/hmemory-bootstrap` for deeper historical backfills. Future hardening could add stale-codebase-note invalidation tied to file mtimes.
+Still intentionally simple: no vector DB, no daemon, and no external service by default. `/hmemory-audit` is explicit and uses whatever Pi model/provider you selected, with a redacted bounded packet and append-only validated changes. Startup/turn auto-refresh is deliberately bounded, compact, local, and lightly configurable through Pi settings; use `/hmemory-bootstrap` for deeper historical backfills.
