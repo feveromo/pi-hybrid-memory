@@ -1,4 +1,4 @@
-import { DynamicBorder, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, withFileMutationQueue, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { complete, StringEnum, type Message } from "@earendil-works/pi-ai";
 import { CancellableLoader, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -34,6 +34,7 @@ const DEFAULT_REPO_MAP_WALK_FALLBACK_LIMIT = 2000;
 const DEFAULT_STARTUP_REPO_MAP_FILE_LIMIT = 500;
 const DEFAULT_PRUNE_ACTIVE_SESSION_RECAPS = 12;
 const DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS = 8;
+const RECIPE_DISPLAY_COMMAND_LIMIT = 6;
 const SESSION_ROOT = join(homedir(), ".pi", "agent", "sessions");
 const SECRET_REPLACEMENT = "[REDACTED]";
 const REPO_NOISE_TOP_LEVEL = new Set([
@@ -41,6 +42,9 @@ const REPO_NOISE_TOP_LEVEL = new Set([
   "Android", "Applications", "Desktop", "Documents", "Downloads", "Games", "Models", "Music", "Pictures", "Public", "Templates", "Videos", "snap", "thinkorswim",
 ]);
 const HOME_REPO_NOISE_TOP_LEVEL = new Set([...REPO_NOISE_TOP_LEVEL, "Dev", "go", "node_modules", "pi-memory-backups"]);
+const GENERIC_MEMORY_QUERY_TERMS = new Set([
+  "agent", "audit", "code", "context", "display", "docs", "extension", "file", "fresh", "implementation", "local", "memory", "pi", "project", "prompt", "repo", "system", "user",
+]);
 
 type MemoryKind = "preference" | "decision" | "project_fact" | "codebase_note" | "recipe" | "work_item" | "session_recap";
 type MemoryScope = "user" | "project";
@@ -304,6 +308,66 @@ function sanitizeFilePaths(filePaths?: string[]) {
   return filePaths?.filter((p) => typeof p === "string" && !isSensitivePath(p)).map((p) => redactSecrets(p)).slice(0, 24);
 }
 
+function isMemoryArtifactPath(path: string) {
+  const p = path.replace(/\\/g, "/");
+  return p.startsWith(".pi/hybrid-memory/")
+    || p.includes("/.pi/hybrid-memory/")
+    || p.includes("/sessions/")
+    || p.includes("/chain-runs/")
+    || p.includes("/pi-subagent")
+    || /(?:^|\/)(?:progress|research|plan)\.md$/i.test(p);
+}
+
+function displayFilePaths(filePaths: string[] | undefined, max: number) {
+  return (sanitizeFilePaths(filePaths) ?? []).filter((p) => !isMemoryArtifactPath(p)).slice(0, max);
+}
+
+function isLowSignalSessionFilePath(path: string) {
+  const p = path.replace(/\\/g, "/");
+  return /\/(?:Pictures\/Screenshots|Screenshots)\//i.test(p)
+    || /\.(?:png|jpe?g|gif|webp|mp4|mov|webm)$/i.test(p);
+}
+
+function recordDisplayFilePaths(r: MemoryRecord, max: number) {
+  const paths = displayFilePaths(r.filePaths, 24);
+  const filtered = r.kind === "session_recap" ? paths.filter((p) => !isLowSignalSessionFilePath(p)) : paths;
+  return filtered.slice(0, max);
+}
+
+function recordHasProjectPath(cwd: string, r: MemoryRecord) {
+  const root = findProjectRoot(cwd);
+  for (const file of sanitizeFilePaths(r.filePaths) ?? []) {
+    if (isMemoryArtifactPath(file)) continue;
+    if (isAbsolute(file)) {
+      if (pathContains(root, file)) return true;
+    } else if (r.scope === "project" && !file.startsWith("..")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function distinctiveQueryTerms(query: string) {
+  return [...new Set(tokenize(query)
+    .map((t) => t.replace(/^[-./:]+|[-./:]+$/g, ""))
+    .filter((t) => t.length >= 4 && !/^\d+$/.test(t) && !GENERIC_MEMORY_QUERY_TERMS.has(t)))];
+}
+
+function recordDirectlyMatchesQuery(r: MemoryRecord, query: string) {
+  const terms = distinctiveQueryTerms(query);
+  if (!terms.length) return false;
+  const direct = [r.subject, r.content, ...(sanitizeFilePaths(r.filePaths) ?? []), ...(r.symbols ?? [])].join(" ").toLowerCase();
+  const matches = terms.filter((t) => direct.includes(t));
+  return matches.some((t) => t.length >= 7 || /[./:_-]/.test(t)) || matches.length >= 2;
+}
+
+function shouldIncludeSearchHit(cwd: string, r: MemoryRecord, query: string) {
+  if (r.scope === "user" && (r.kind === "codebase_note" || r.kind === "recipe" || r.kind === "project_fact")) {
+    return recordHasProjectPath(cwd, r) || recordDirectlyMatchesQuery(r, query);
+  }
+  return true;
+}
+
 function sanitizeRecordForStorage(r: MemoryRecord): MemoryRecord {
   return {
     ...r,
@@ -339,6 +403,15 @@ function paths(cwd: string) {
     user: USER_MEMORY_DIR,
     project: projectMemoryDir(cwd),
   } as const;
+}
+
+async function withHybridMemoryMutation<T>(cwd: string, fn: () => T | Promise<T>): Promise<T> {
+  const p = paths(cwd);
+  // Custom tools can run in parallel. Serialize the local memory mutation window
+  // through Pi's file queue so JSONL appends and regenerated summaries/context do
+  // not race each other in one agent turn.
+  return withFileMutationQueue(join(p.user, RECORDS), () =>
+    withFileMutationQueue(join(p.project, RECORDS), async () => fn()));
 }
 
 function initializeDir(dir: string, scope: MemoryScope) {
@@ -413,7 +486,7 @@ function scoreRecord(r: MemoryRecord, query: string, cwd: string) {
     if (r.symbols?.some((s) => s.toLowerCase() === t)) lexicalScore += 4;
     if (r.tags?.some((tag) => tag.toLowerCase() === t)) lexicalScore += 3;
   }
-  if (lexicalScore <= 0) return active && r.pinned ? 12 + r.salience : 0;
+  if (lexicalScore <= 0) return shouldInjectPinnedByDefault(cwd, r) ? 12 + r.salience : 0;
   let score = lexicalScore;
   if (active) score += 4;
   if (r.pinned && active) score += 12;
@@ -427,13 +500,20 @@ function scoreRecord(r: MemoryRecord, query: string, cwd: string) {
 function searchRecords(cwd: string, query: string, limit = 12) {
   return latestRecords(allRecords(cwd))
     .map((record) => ({ record, score: scoreRecord(record, query, cwd) }))
-    .filter((x) => isActiveRecord(x.record) && (x.record.pinned || x.score > 0))
+    .filter((x) => isActiveRecord(x.record) && x.score > 0 && shouldIncludeSearchHit(cwd, x.record, query))
     .sort((a, b) => b.score - a.score || b.record.updatedAt.localeCompare(a.record.updatedAt))
     .slice(0, limit);
 }
 
+function shouldInjectPinnedByDefault(cwd: string, r: MemoryRecord) {
+  if (!isActiveRecord(r) || !r.pinned) return false;
+  if (r.kind === "preference" || r.kind === "decision" || r.kind === "work_item") return true;
+  if (r.scope === "project") return true;
+  return recordHasProjectPath(cwd, r);
+}
+
 function pinnedAndActiveRecords(cwd: string) {
-  return latestRecords(allRecords(cwd)).filter((r) => isActiveRecord(r) && (r.pinned || r.kind === "work_item"));
+  return latestRecords(allRecords(cwd)).filter((r) => isActiveRecord(r) && (r.kind === "work_item" || shouldInjectPinnedByDefault(cwd, r)));
 }
 
 function recordKey(r: Pick<MemoryRecord, "scope" | "id">) {
@@ -810,7 +890,16 @@ function textParts(content: unknown): string[] {
 
 function compactText(text: string, max = 220) {
   const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+  if (oneLine.length <= max) return oneLine;
+  const hard = Math.max(1, max - 1);
+  const window = oneLine.slice(0, hard);
+  const minBoundary = Math.floor(hard * 0.65);
+  const boundary = [". ", "; ", ", ", " — ", " - ", " "]
+    .map((needle) => window.lastIndexOf(needle))
+    .filter((idx) => idx >= minBoundary)
+    .sort((a, b) => b - a)[0];
+  const clipped = window.slice(0, boundary ?? hard).replace(/[\s,;:.-]+$/g, "");
+  return `${clipped || window.trimEnd()}…`;
 }
 
 function conciseList(items: string[], maxItems: number, maxEach: number) {
@@ -845,10 +934,22 @@ function looksLikePastedReviewPrompt(prompt: string) {
     && /\b(reviewed|said this|thoughts|what do you think|fix everything)\b/i.test(text);
 }
 
+function looksLikeContextInspectionText(text: string) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return false;
+  const quotesHybridMemory = /(?:<hybrid_memory>|\[redacted-hybrid-memory-tag\])/i.test(clean)
+    && /\b(?:show|quote|dump|print|exact|exactly|block|context|injected|saw|visible|can see)\b/i.test(clean);
+  const asksForInjectedContext = /\b(?:injected|runtime|agent|prompt)\s+context\b/i.test(clean)
+    && /\b(?:show|quote|dump|print|exactly|visible|inspect|inspection)\b/i.test(clean);
+  const promptDisclosureGuard = /\b(?:do not|don't|avoid|without)\b.{0,80}\b(?:reveal|disclos\w*|dump|show)\b.{0,80}\b(?:system|developer)\s+prompt\b/i.test(clean);
+  return quotesHybridMemory || asksForInjectedContext || promptDisclosureGuard;
+}
+
 function looksLikeAgentArtifactPrompt(prompt: string) {
   const text = prompt.trim();
   return likelyDelegatedPrompt(text)
     || looksLikePastedReviewPrompt(text)
+    || looksLikeContextInspectionText(text)
     || /^<file\s+name=/i.test(text)
     || /(?:\b(?:pi-subagent|pi-subagents|chain-runs)\b|\[read from:|\[write to:)/i.test(text);
 }
@@ -915,11 +1016,19 @@ function isUserFacingSessionPrompt(prompt: string) {
   return text.length >= 3 && !looksLikeAgentArtifactPrompt(text);
 }
 
-function splitRecipeCommands(content: string) {
+function stripRecipeCommandPrefix(content: string) {
   return content
-    .replace(/^Useful commands seen in prior session:\s*/i, "")
+    .replace(/^Useful (?:commands seen in prior session|project validation commands|validation\/build commands):\s*/i, "")
+    .replace(/\.\s+Broader checks used in sessions include\s*/i, "; ")
+    .replace(/,\s+(?=(?:HOME=|[A-Za-z0-9_./-]+=|pi\s+|npm\s+|pnpm\s+|yarn\s+|bun\s+|make\s+|node\s+|tsx\s+|python\s+))/g, "; ")
+    .replace(/,?\s+and\s+(?=(?:HOME=|[A-Za-z0-9_./-]+=|pi\s+|npm\s+|pnpm\s+|yarn\s+|bun\s+|make\s+|node\s+|tsx\s+|python\s+))/g, "; ")
+    .replace(/\.$/, "");
+}
+
+function splitRecipeCommands(content: string) {
+  return stripRecipeCommandPrefix(content)
     .split(/;\s*/)
-    .map((cmd) => cmd.trim())
+    .map((cmd) => cmd.trim().replace(/[.。]$/, ""))
     .filter(Boolean);
 }
 
@@ -930,6 +1039,17 @@ function normalizeCommandForDedupe(cmd: string) {
     .replace(/pi-(?:subagent|subagents)-[^\s;|&]+/g, "pi-subagent-…")
     .trim()
     .toLowerCase();
+}
+
+function commandFamilyKey(cmd: string) {
+  const n = normalizeCommandForDedupe(cmd);
+  if (/\bnpm\s+test\b/.test(n)) return "npm test";
+  const npmRun = n.match(/\bnpm\s+run\s+([a-z0-9:_-]+)/);
+  if (npmRun) return `npm run ${npmRun[1]}`;
+  const nodeScript = n.match(/\b(?:node|tsx)\s+(scripts\/[^\s]+)/);
+  if (nodeScript) return `node ${nodeScript[1]}`;
+  if (/\bpi\s+--no-session\b/.test(n)) return "pi --no-session";
+  return n;
 }
 
 function hasUsefulProjectAction(cmd: string) {
@@ -945,11 +1065,27 @@ function isUsefulProjectCommand(cmd: string) {
   return hasUsefulProjectAction(normalizeCommandForDedupe(cmd));
 }
 
-function usefulProjectCommandSnippet(cmd: string) {
-  if (!isUsefulProjectCommand(cmd)) return undefined;
+function usefulProjectCommandParts(cmd: string) {
   const parts = cmd.split(/\s*(?:&&|\|\||;)\s*/).map((part) => part.trim()).filter(Boolean);
   const usefulParts = parts.filter(isUsefulProjectCommand);
-  return (usefulParts.length ? usefulParts : [cmd]).join(" && ");
+  return usefulParts.length ? usefulParts : isUsefulProjectCommand(cmd) ? [cmd.trim()] : [];
+}
+
+function usefulProjectCommandSnippet(cmd: string) {
+  const usefulParts = usefulProjectCommandParts(cmd);
+  return usefulParts.length ? usefulParts.join(" && ") : undefined;
+}
+
+function commandDisplaySnippet(cmd: string) {
+  return compactText(cmd.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, ""), 120);
+}
+
+function recipeCommandSnippets(content: string) {
+  return [...new Set(splitRecipeCommands(content).flatMap(usefulProjectCommandParts).map(commandDisplaySnippet))];
+}
+
+function recipeCommandFamilyKeys(content: string) {
+  return [...new Set(recipeCommandSnippets(content).map(commandFamilyKey))];
 }
 
 function sameProject(a: string, b: string) {
@@ -1093,7 +1229,7 @@ function extractSessionRecords(sessionFile: string, importCwd: string): MemoryRe
   const delegatedOnly = userPrompts.length > 0 && recapPrompts.length === 0;
   const promptSummary = conciseList(recapPrompts.slice(0, 4), 3, 90).join(" | ");
   const doneHints = conciseList(assistantTexts.filter((t) => /\b(done|built|implemented|fixed|validated|removed|installed)\b/i.test(t)).slice(-2), 2, 120);
-  const fileList = sanitizeFilePaths([...files].filter((f) => !f.includes("/sessions/")))?.slice(0, 8) ?? [];
+  const fileList = (sanitizeFilePaths([...files]) ?? []).filter((f) => !isMemoryArtifactPath(f)).slice(0, 8);
   const records: MemoryRecord[] = [];
 
   if ((promptSummary || doneHints.length) && !delegatedOnly) {
@@ -1274,6 +1410,7 @@ function noisyAutoPreferenceReason(r: MemoryRecord) {
 
 function noisySessionRecapReason(r: MemoryRecord) {
   if (r.kind !== "session_recap" || !(r.tags ?? []).includes("session-import")) return undefined;
+  if (looksLikeContextInspectionText(r.content)) return "context-inspection-recap";
   return /(?:\b(?:You are a memory extraction system|You are the orchestrator|Task: Research this topic|pi-subagent|pi-subagents|chain-runs)\b|\[Read from:|\[Write to:)/i.test(r.content)
     ? "delegated-session-recap"
     : undefined;
@@ -1335,9 +1472,11 @@ function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
     for (const r of group.slice(1)) markStale(r, "duplicate-subject");
   }
   const recipeGroups = new Map<string, MemoryRecord[]>();
-  for (const r of active.filter((x) => x.kind === "recipe" && !x.pinned)) {
-    const commands = splitRecipeCommands(r.content).filter(isUsefulProjectCommand).map(normalizeCommandForDedupe);
-    if (!commands.length) continue;
+  const recipeCommandSets = active
+    .filter((x) => x.kind === "recipe")
+    .map((r) => ({ r, commands: recipeCommandFamilyKeys(r.content).sort() }))
+    .filter((x) => x.commands.length);
+  for (const { r, commands } of recipeCommandSets.filter((x) => !x.r.pinned)) {
     const key = commands.join("; ");
     const arr = recipeGroups.get(key) ?? [];
     arr.push(r);
@@ -1348,6 +1487,15 @@ function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
     duplicateGroups++;
     group.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     for (const r of group.slice(1)) markStale(r, "duplicate-command-recipe");
+  }
+  for (const current of recipeCommandSets.filter((x) => !x.r.pinned)) {
+    const covered = recipeCommandSets.some((other) => {
+      if (other.r === current.r) return false;
+      if (!other.r.pinned && other.r.updatedAt < current.r.updatedAt) return false;
+      const otherSet = new Set(other.commands);
+      return current.commands.every((cmd) => otherSet.has(cmd)) && other.commands.length >= current.commands.length;
+    });
+    if (covered) markStale(current.r, "covered-command-recipe");
   }
   const recapLimit = (scope: MemoryScope) => scope === "project" ? maxActiveSessionRecaps : Math.max(8, maxActiveSessionRecaps);
   const recapsByScope = new Map<MemoryScope, MemoryRecord[]>();
@@ -1607,7 +1755,7 @@ function memoryRecordToolLine(theme: any, r: MemoryRecord, maxSubject = 72, show
 }
 
 function memoryToolFilesLine(theme: any, filePaths?: string[]) {
-  const files = (sanitizeFilePaths(filePaths) ?? []).slice(0, 4);
+  const files = displayFilePaths(filePaths, 4);
   return files.length ? `${memoryTheme(theme, "dim", "files")} ${files.join("  ")}` : "";
 }
 
@@ -1618,11 +1766,56 @@ function reviewKindLabel(r: MemoryRecord) {
   return `${padVisible(memoryKindIcon(r.kind), 2)}${r.kind.replace(/_/g, " ")}`;
 }
 
+function cleanSessionTopics(text: string) {
+  return text
+    .replace(/\s*\|\s*\+\d+\s+more\.?/gi, "")
+    .split(/\s*\|\s*/)
+    .map((part) => part.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" / ");
+}
+
+function cleanSessionFragment(text: string) {
+  return text
+    .replace(/\s+Tools:\s+.*$/i, "")
+    .replace(/##\s*Changed files[\s\S]*$/i, "")
+    .replace(/\[(?:Read|Write) from:[\s\S]*$/i, "")
+    .replace(/```[a-z0-9_-]*\s*/gi, "")
+    .replace(/```/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/\s*\|\s*\+\d+\s+more\.?/gi, "")
+    .trim();
+}
+
+function cleanSessionOutcome(text: string) {
+  return cleanSessionFragment(text)
+    .split(/\s*\|\s*/)
+    .map((part) => part.replace(/^[-*]\s*/, "").trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" / ");
+}
+
+function displaySessionRecap(content: string) {
+  const withoutTools = content.replace(/\s+Tools:\s+.*$/i, "").trim();
+  const outcomeMatch = withoutTools.match(/\sOutcomes:\s*([\s\S]+)$/i);
+  const lead = outcomeMatch ? withoutTools.slice(0, outcomeMatch.index).trim() : withoutTools;
+  const outcome = outcomeMatch ? cleanSessionOutcome(outcomeMatch[1] ?? "") : "";
+  const prior = lead.match(/^Prior session \(([^)]+)\):\s*([\s\S]*?)\.?$/i);
+  const location = prior?.[1];
+  const topics = cleanSessionTopics(prior?.[2] ?? lead);
+  const pieces = [outcome ? `outcome: ${compactText(outcome, 180)}` : "", topics ? `topics: ${compactText(topics, 110)}` : ""].filter(Boolean);
+  if (!pieces.length) return compactText(cleanSessionFragment(content), 240);
+  return `Prior session${location ? ` (${location})` : ""}: ${pieces.join("; ")}`;
+}
+
 function displayContent(r: MemoryRecord) {
   if (r.kind === "recipe" && (r.tags ?? []).includes("commands")) {
-    const snippets = [...new Set(splitRecipeCommands(r.content).map(usefulProjectCommandSnippet).filter((cmd): cmd is string => Boolean(cmd)))];
-    if (snippets.length) return `Useful validation/build commands: ${snippets.slice(0, 5).join("; ")}${snippets.length > 5 ? `; +${snippets.length - 5} more` : ""}`;
+    const snippets = recipeCommandSnippets(r.content);
+    if (snippets.length) return `Useful validation/build commands: ${snippets.slice(0, RECIPE_DISPLAY_COMMAND_LIMIT).join("; ")}${snippets.length > RECIPE_DISPLAY_COMMAND_LIMIT ? `; +${snippets.length - RECIPE_DISPLAY_COMMAND_LIMIT} more` : ""}`;
   }
+  if (r.kind === "session_recap") return displaySessionRecap(r.content);
   return r.content;
 }
 
@@ -1678,7 +1871,7 @@ function buildReviewLines(records: MemoryRecord[], selected: number, _theme: any
   const current = records[selected];
   const detailRows = current ? (() => {
     const status = current.status ?? "active";
-    const files = (sanitizeFilePaths(current.filePaths) ?? []).slice(0, 3);
+    const files = recordDisplayFilePaths(current, 3);
     const fileText = files.length ? files.join("  ") : warp.dim("—");
     return [
       `${warp.cyan("selected")} ${warp.green(current.scope)} ${warp.dim("/")} ${warp.purple(current.kind.replace(/_/g, " "))} ${warp.dim("/")} ${status === "active" ? warp.green(status) : warp.amber(status)}`,
@@ -1742,11 +1935,55 @@ function buildDashboardLines(cwd: string, theme: any, width: number, detailed = 
   return rows.map((line) => centerVisible(line, width));
 }
 
+function injectionDedupeKey(r: MemoryRecord) {
+  if (r.kind === "recipe") {
+    const families = recipeCommandFamilyKeys(r.content).sort();
+    return families.length ? `recipe:${families.join("|")}` : `recipe:${normalizeCommandForDedupe(displayContent(r))}`;
+  }
+  if (r.kind === "session_recap") {
+    return `session:${displaySessionRecap(r.content).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 180)}`;
+  }
+  return `${r.scope}:${r.kind}:${r.subject.toLowerCase()}:${compactText(displayContent(r).toLowerCase(), 180)}`;
+}
+
+function sessionRecapCommitKeys(r: MemoryRecord) {
+  return [...new Set((r.content.match(/\b[0-9a-f]{7,40}\b/gi) ?? []).map((hash) => hash.toLowerCase()))];
+}
+
+function shouldInjectSessionRecap(r: MemoryRecord) {
+  return r.pinned || (!looksLikeContextInspectionText(r.content) && !noisySessionRecapReason(r));
+}
+
+function dedupeInjectionRecords(records: MemoryRecord[]) {
+  const seen = new Set<string>();
+  const seenRecipeFamilies: Array<Set<string>> = [];
+  const seenSessionCommits = new Set<string>();
+  const out: MemoryRecord[] = [];
+  for (const r of records) {
+    const key = injectionDedupeKey(r);
+    if (seen.has(key)) continue;
+    if (r.kind === "recipe") {
+      const families = recipeCommandFamilyKeys(r.content).sort();
+      if (families.length && seenRecipeFamilies.some((prior) => families.every((cmd) => prior.has(cmd)))) continue;
+      if (families.length) seenRecipeFamilies.push(new Set(families));
+    }
+    if (r.kind === "session_recap") {
+      const commits = sessionRecapCommitKeys(r);
+      if (commits.length && commits.some((commit) => seenSessionCommits.has(commit))) continue;
+      for (const commit of commits) seenSessionCommits.add(commit);
+    }
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
 function memoryLine(r: MemoryRecord) {
-  const maxContent = r.kind === "session_recap" ? 260 : r.kind === "recipe" ? 220 : 320;
+  const maxContent = r.kind === "session_recap" ? 240 : r.kind === "recipe" ? 220 : 320;
   const content = compactText(redactSecrets(displayContent(r)), maxContent);
-  const files = sanitizeFilePaths(r.filePaths)?.slice(0, r.kind === "session_recap" || r.kind === "recipe" ? 4 : 6);
-  const fileSuffix = files?.length ? ` (files: ${files.join(", ")}${(r.filePaths?.length ?? 0) > files.length ? ", …" : ""})` : "";
+  const files = recordDisplayFilePaths(r, r.kind === "session_recap" ? 3 : r.kind === "recipe" ? 4 : 6);
+  const totalDisplayFiles = recordDisplayFilePaths(r, 24).length;
+  const fileSuffix = files.length ? ` (files: ${files.join(", ")}${totalDisplayFiles > files.length ? ", …" : ""})` : "";
   return `${r.pinned ? "📌 " : ""}${content}${fileSuffix}`;
 }
 
@@ -1762,7 +1999,7 @@ function buildInjection(cwd: string, prompt: string) {
     ["Project Decisions", results.filter((r) => r.scope === "project" && ["decision", "project_fact"].includes(r.kind))],
     ["Active Work", results.filter((r) => r.kind === "work_item" && (r.status ?? "active") === "active")],
     ["Recipes", results.filter((r) => r.kind === "recipe")],
-    ["Relevant Session Recaps", results.filter((r) => r.kind === "session_recap")],
+    ["Relevant Session Recaps", results.filter((r) => r.kind === "session_recap" && shouldInjectSessionRecap(r))],
     ["Relevant Codebase Notes", results.filter((r) => r.kind === "codebase_note")],
   ];
   const lines = [
@@ -1773,12 +2010,13 @@ function buildInjection(cwd: string, prompt: string) {
   ];
   let any = false;
   for (const [title, arr] of sections) {
-    if (!arr.length) continue;
+    const polished = dedupeInjectionRecords(arr);
+    if (!polished.length) continue;
     const sectionLimit = config.injectSectionLimits[title] ?? 4;
     if (sectionLimit <= 0) continue;
     any = true;
     lines.push(`## ${title}`);
-    for (const r of arr.slice(0, sectionLimit)) lines.push(`- ${memoryLine(r)}`);
+    for (const r of polished.slice(0, sectionLimit)) lines.push(`- ${memoryLine(r)}`);
     lines.push("");
   }
   const repoMap = readRepoMap(cwd);
@@ -2762,27 +3000,29 @@ export default function (pi: ExtensionAPI) {
       pinned: Type.Optional(Type.Boolean()),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const ts = nowIso();
-      const scope = (params.scope ?? "project") as MemoryScope;
-      const rec: MemoryRecord = {
-        id: safeId(params.kind, redactSecrets(params.subject)),
-        schemaVersion: 1,
-        scope,
-        kind: params.kind as MemoryKind,
-        subject: params.subject,
-        content: params.content,
-        tags: params.tags ?? [],
-        filePaths: params.filePaths,
-        symbols: params.symbols,
-        status: "active",
-        salience: Math.max(1, Math.min(5, Math.round(params.salience ?? 3))) as 1 | 2 | 3 | 4 | 5,
-        pinned: params.pinned ?? false,
-        createdAt: ts,
-        updatedAt: ts,
-      };
-      const stored = appendRecord(ctx.cwd, rec);
-      updateMemoryChrome(ctx);
-      return { content: [{ type: "text", text: `Remembered ${recordKey(stored)} in ${scope} memory.` }], details: stored };
+      return withHybridMemoryMutation(ctx.cwd, async () => {
+        const ts = nowIso();
+        const scope = (params.scope ?? "project") as MemoryScope;
+        const rec: MemoryRecord = {
+          id: safeId(params.kind, redactSecrets(params.subject)),
+          schemaVersion: 1,
+          scope,
+          kind: params.kind as MemoryKind,
+          subject: params.subject,
+          content: params.content,
+          tags: params.tags ?? [],
+          filePaths: params.filePaths,
+          symbols: params.symbols,
+          status: "active",
+          salience: Math.max(1, Math.min(5, Math.round(params.salience ?? 3))) as 1 | 2 | 3 | 4 | 5,
+          pinned: params.pinned ?? false,
+          createdAt: ts,
+          updatedAt: ts,
+        };
+        const stored = appendRecord(ctx.cwd, rec);
+        updateMemoryChrome(ctx);
+        return { content: [{ type: "text", text: `Remembered ${recordKey(stored)} in ${scope} memory.` }], details: stored };
+      });
     },
     renderCall(args, theme) {
       const scope = String(args.scope ?? "project");
@@ -2850,11 +3090,13 @@ export default function (pi: ExtensionAPI) {
       note: Type.Optional(Type.String()),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const status = (params.status ?? "stale") as MemoryStatus;
-      const patch: Partial<MemoryRecord> = { status };
-      if (params.note) patch.evidence = { note: redactSecrets(params.note) };
-      const result = updateRecord(ctx.cwd, params.id, patch, params.scope as MemoryScope | undefined);
-      return { content: [{ type: "text", text: updateResultText(result, params.id, `-> ${status}`) }], details: result };
+      return withHybridMemoryMutation(ctx.cwd, async () => {
+        const status = (params.status ?? "stale") as MemoryStatus;
+        const patch: Partial<MemoryRecord> = { status };
+        if (params.note) patch.evidence = { note: redactSecrets(params.note) };
+        const result = updateRecord(ctx.cwd, params.id, patch, params.scope as MemoryScope | undefined);
+        return { content: [{ type: "text", text: updateResultText(result, params.id, `-> ${status}`) }], details: result };
+      });
     },
     renderCall(args, theme) {
       const status = String(args.status ?? "stale");
@@ -2890,12 +3132,14 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: "text", text: "Importing session memory..." }] });
-      const files = params.sessionPath
-        ? [resolve(params.sessionPath.replace(/^~/, homedir()))]
-        : listSessionFiles(params.recent ?? 10, params.projectOnly === false ? undefined : ctx.cwd);
-      const result = importSessions(ctx.cwd, files.filter((f) => existsSync(f)));
-      updateMemoryChrome(ctx);
-      return { content: [{ type: "text", text: `Imported sessions: scanned ${result.scanned}, extracted ${result.extracted}, wrote ${result.written}.` }], details: result };
+      return withHybridMemoryMutation(ctx.cwd, async () => {
+        const files = params.sessionPath
+          ? [resolve(params.sessionPath.replace(/^~/, homedir()))]
+          : listSessionFiles(params.recent ?? 10, params.projectOnly === false ? undefined : ctx.cwd);
+        const result = importSessions(ctx.cwd, files.filter((f) => existsSync(f)));
+        updateMemoryChrome(ctx);
+        return { content: [{ type: "text", text: `Imported sessions: scanned ${result.scanned}, extracted ${result.extracted}, wrote ${result.written}.` }], details: result };
+      });
     },
     renderCall(args, theme) {
       const source = args.sessionPath ? memoryToolPreview(args.sessionPath, 72) : `${args.recent ?? 10} recent${args.projectOnly === false ? "" : " project"}`;
@@ -2925,18 +3169,20 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: "text", text: "Refreshing repo map..." }] });
-      const map = buildRepoMap(ctx.cwd);
-      let importResult: ReturnType<typeof importSessions> | undefined;
-      if (params.importSessions ?? true) {
-        const current = ctx.sessionManager.getSessionFile();
-        const recent = params.recentSessions ?? 5;
-        const files = [...new Set([...(current ? [current] : []), ...listSessionFiles(recent, ctx.cwd)])];
-        importResult = importSessions(ctx.cwd, files);
-      }
-      regenerateProjectContext(ctx.cwd, map);
-      updateProjectState(ctx.cwd, { lastToolRefreshAt: nowIso(), lastToolRefreshSessionsWritten: importResult?.written ?? 0 });
-      updateMemoryChrome(ctx);
-      return { content: [{ type: "text", text: `Refreshed repo map (${map.files.length} files)${importResult ? ` and session memory (${importResult.written} writes)` : ""}.` }], details: { repoMap: { path: join(projectMemoryDir(ctx.cwd), REPOMAP), files: map.files.length }, importResult } };
+      return withHybridMemoryMutation(ctx.cwd, async () => {
+        const map = buildRepoMap(ctx.cwd);
+        let importResult: ReturnType<typeof importSessions> | undefined;
+        if (params.importSessions ?? true) {
+          const current = ctx.sessionManager.getSessionFile();
+          const recent = params.recentSessions ?? 5;
+          const files = [...new Set([...(current ? [current] : []), ...listSessionFiles(recent, ctx.cwd)])];
+          importResult = importSessions(ctx.cwd, files);
+        }
+        regenerateProjectContext(ctx.cwd, map);
+        updateProjectState(ctx.cwd, { lastToolRefreshAt: nowIso(), lastToolRefreshSessionsWritten: importResult?.written ?? 0 });
+        updateMemoryChrome(ctx);
+        return { content: [{ type: "text", text: `Refreshed repo map (${map.files.length} files)${importResult ? ` and session memory (${importResult.written} writes)` : ""}.` }], details: { repoMap: { path: join(projectMemoryDir(ctx.cwd), REPOMAP), files: map.files.length }, importResult } };
+      });
     },
     renderCall(args, theme) {
       const sessions = args.importSessions === false ? "repo only" : `${args.recentSessions ?? 5} sessions`;
@@ -2963,9 +3209,11 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params, _signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: "text", text: "Bootstrapping project memory from local sessions..." }] });
-      const result = bootstrapProjectMemory(ctx.cwd, boundedNumber(params.maxSessions, 250, 10, 500));
-      updateMemoryChrome(ctx);
-      return { content: [{ type: "text", text: `Bootstrapped project memory: repo map ${result.repoFiles} files; sessions scanned ${result.sessions.scanned}, extracted ${result.sessions.extracted}, wrote ${result.sessions.written}; pruned ${result.prune.staleMarked}.` }], details: result };
+      return withHybridMemoryMutation(ctx.cwd, async () => {
+        const result = bootstrapProjectMemory(ctx.cwd, boundedNumber(params.maxSessions, 250, 10, 500));
+        updateMemoryChrome(ctx);
+        return { content: [{ type: "text", text: `Bootstrapped project memory: repo map ${result.repoFiles} files; sessions scanned ${result.sessions.scanned}, extracted ${result.sessions.extracted}, wrote ${result.sessions.written}; pruned ${result.prune.staleMarked}.` }], details: result };
+      });
     },
     renderCall(args, theme) {
       return memoryToolCall(theme, "🌱 bootstrap project", memoryTheme(theme, "muted", `${args.maxSessions ?? 250} sessions max`));
@@ -3025,9 +3273,11 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: "text", text: "Building repo map..." }] });
-      const map = buildRepoMap(ctx.cwd);
-      updateMemoryChrome(ctx);
-      return { content: [{ type: "text", text: `Repo map built for ${map.root}: ${map.files.length} files.` }], details: { path: join(projectMemoryDir(ctx.cwd), REPOMAP), files: map.files.length } };
+      return withHybridMemoryMutation(ctx.cwd, async () => {
+        const map = buildRepoMap(ctx.cwd);
+        updateMemoryChrome(ctx);
+        return { content: [{ type: "text", text: `Repo map built for ${map.root}: ${map.files.length} files.` }], details: { path: join(projectMemoryDir(ctx.cwd), REPOMAP), files: map.files.length } };
+      });
     },
     renderCall(args, theme) {
       return memoryToolCall(theme, "🗺️ repo map", memoryTheme(theme, "muted", "build cache"));

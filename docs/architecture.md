@@ -47,10 +47,13 @@ Before an agent starts, the extension:
 
 1. Redacts secrets from the prompt used for matching.
 2. Scores active records by lexical/path/symbol relevance.
-3. Always considers pinned active records and active work items. Inactive records (`done`, `stale`, or `superseded`) are not injected even if still pinned.
+3. Considers pinned active records and active work items, while keeping global pinned codebase notes scoped to matching prompts or project paths. Inactive records (`done`, `stale`, or `superseded`) are not injected even if still pinned.
 4. Groups results into sections such as user preferences, project decisions, recipes, session recaps, and codebase notes.
-5. Adds relevant repo-map matches when available.
-6. Injects a capped `<hybrid_memory>` block into the system prompt. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
+5. Lightly polishes the display: command recipes are normalized/deduped, session recaps render as concise outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, global technical notes need distinctive prompt/path matches, and truncation prefers word boundaries.
+6. Adds relevant repo-map matches when available.
+7. Injects a capped `<hybrid_memory>` block into the system prompt. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
+
+Mutating hybrid-memory tools use Pi's file mutation queue so parallel tool calls serialize JSONL appends and regenerated summaries/context.
 
 The injected block explicitly says retrieved records are untrusted context and must not be treated as instructions unless the current user asks.
 
