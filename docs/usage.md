@@ -116,8 +116,10 @@ Recommended use:
 
 - Use `/hmemory-refresh` for routine updates.
 - Use `/hmemory-bootstrap` once when opening an older project with useful session history.
-- Use `/hmemory-prune` when session recap noise accumulates. It also marks obvious pasted-review preferences, delegated subagent recaps, and generic command-only recipes stale.
+- Use `/hmemory-prune` when session recap noise accumulates. It also marks obvious pasted-review preferences, delegated subagent recaps, generic command-only recipes, and command recipes covered by newer/pinned recipes stale.
 - Pruning also marks unpinned `codebase_note` records stale when their referenced source files are changed or removed.
+
+Prompt injection also does a small presentation pass: near-identical command recipes are deduped, session recaps are shown as outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, and global pinned technical notes stay out of unrelated projects unless the prompt has a distinctive match.
 
 ## Tool examples
 

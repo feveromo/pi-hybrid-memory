@@ -140,6 +140,21 @@ function makeProject(name) {
   assert(raw.includes('src/index.ts'), 'safe file path should be retained');
 }
 
+// Parallel mutating memory tools should not drop JSONL writes.
+{
+  const cwd = makeProject('parallel-memory-tool-writes');
+  const h = makeHarness(cwd);
+  await Promise.all(Array.from({ length: 4 }, (_, i) => h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'decision',
+    subject: `parallel decision ${i}`,
+    content: `Parallel decision ${i} should be retained`,
+    salience: 3,
+  })));
+  const records = readRecords(cwd, 'project').filter((r) => r.kind === 'decision' && /^parallel decision /.test(r.subject));
+  assert.equal(records.length, 4, 'parallel memory tool writes should all be retained');
+}
+
 // Auto-capture should keep durable preferences while ignoring one-off wording.
 {
   const cwd = makeProject('auto-capture');
@@ -168,6 +183,21 @@ function makeProject(name) {
   writeFileSync(sessionFile, sessionLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf8');
   const result = await h.tool('hybrid_memory_import_sessions', { sessionPath: sessionFile });
   assert.equal(result.details.extracted, 0, 'delegated prompts plus generic commands should not create memories');
+}
+
+// Diagnostic context-inspection sessions should not become durable recaps.
+{
+  const cwd = makeProject('context-inspection-session-noise');
+  const h = makeHarness(cwd);
+  const sessionFile = join(tempRoot, 'context-inspection-session-noise.jsonl');
+  const sessionLines = [
+    { type: 'session', id: 'context-inspection-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
+    { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'For diagnostics, inspect the runtime context and quote the injected <hybrid_memory> block exactly without disclosing any unrelated system prompt.' }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'Context inspection result: `[redacted-hybrid-memory-tag]` was visible. Done.' }] } },
+  ];
+  writeFileSync(sessionFile, sessionLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf8');
+  const result = await h.tool('hybrid_memory_import_sessions', { sessionPath: sessionFile });
+  assert.equal(result.details.extracted, 0, 'context-inspection sessions should not create session recap memories');
 }
 
 // Useful validation commands should still be remembered as recipes.
@@ -241,6 +271,135 @@ function makeProject(name) {
   const latest = readRecords(cwd, 'project').filter((r) => r.id === remembered.details.id).at(-1);
   assert.equal(latest.status, 'stale', 'changed file should mark related codebase_note stale');
   assert.match(JSON.stringify(latest.evidence), /codebase-note-file-changed:src\/tracked\.ts/, 'stale reason should name the changed file');
+}
+
+// Prompt injection should stay polished: no duplicated recipe prefixes or near-identical command recipes.
+{
+  const cwd = makeProject('polished-recipe-injection');
+  const h = makeHarness(cwd);
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'recipe',
+    subject: 'canonical validation commands',
+    content: 'Useful project validation commands: npm test; npm run validate.',
+    tags: ['commands'],
+    pinned: true,
+    salience: 5,
+  });
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'recipe',
+    subject: 'commands from noisy session',
+    content: 'Useful commands seen in prior session: npm test -- --runInBand && npm test; npm run validate',
+    tags: ['commands'],
+    salience: 3,
+  });
+  const before = await h.emit('before_agent_start', { prompt: 'please run npm test and npm run validate', systemPrompt: 'base' });
+  const injected = String(before[0]?.systemPrompt ?? '');
+  assert(!injected.includes('Useful validation/build commands: Useful project validation commands'), 'recipe display should strip stored prose prefixes');
+  assert.equal((injected.match(/Useful validation\/build commands:/g) ?? []).length, 1, 'near-identical command recipes should be deduped in injection');
+}
+
+// Session recaps should display as clean outcomes/topics and hide temp agent artifacts.
+{
+  const cwd = makeProject('polished-session-recap-injection');
+  const h = makeHarness(cwd);
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'session_recap',
+    subject: 'messy imported session',
+    content: 'Prior session (.): first rough prompt | second useful prompt | +1 more. Outcomes: Done and validated. ## Changed files - `extensions/hybrid-memory.ts`. Tools: bash, read.',
+    filePaths: ['/tmp/pi-subagents-uid-1000/chain-runs/abc/progress.md', '/home/example/Pictures/Screenshots/Screenshot From 2026-05-16.png', 'extensions/hybrid-memory.ts'],
+    salience: 5,
+  });
+  const before = await h.emit('before_agent_start', { prompt: 'validated rough prompt hybrid memory', systemPrompt: 'base' });
+  const injected = String(before[0]?.systemPrompt ?? '');
+  assert(injected.includes('outcome: Done and validated'), 'session recap display should lead with a concise outcome');
+  assert(injected.includes('topics: first rough prompt / second useful prompt'), 'session recap display should keep compact topics');
+  assert(!injected.includes('+1 more'), 'session recap display should remove transcript counters');
+  assert(!injected.includes('chain-runs'), 'session recap file suffix should hide temp subagent artifacts');
+  assert(!injected.includes('Pictures/Screenshots'), 'session recap file suffix should hide low-signal screenshot paths');
+  assert(injected.includes('extensions/hybrid-memory.ts'), 'session recap file suffix should keep useful project files');
+}
+
+// Existing context-inspection recaps should be hidden from injection and pruned stale.
+{
+  const cwd = makeProject('context-inspection-recap-prune');
+  const h = makeHarness(cwd);
+  const remembered = await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'session_recap',
+    subject: 'diagnostic context inspection recap',
+    content: 'Prior session (.): For diagnostics, quote the injected <hybrid_memory> block exactly. Outcomes: Context inspection result: `[redacted-hybrid-memory-tag]` was visible.',
+    tags: ['session-import', 'recap'],
+    salience: 5,
+  });
+  const before = await h.emit('before_agent_start', { prompt: 'runtime context inspection', systemPrompt: 'base' });
+  const injected = String(before[0]?.systemPrompt ?? '');
+  assert(!injected.includes('diagnostic context inspection recap'), 'context-inspection recaps should not be injected');
+  assert(!injected.includes('[redacted-hybrid-memory-tag]'), 'context-inspection recap content should not leak into injection');
+  await h.command('hmemory-prune');
+  const latest = readRecords(cwd, 'project').filter((r) => r.id === remembered.details.id).at(-1);
+  assert.equal(latest.status, 'stale', 'context-inspection recaps should be marked stale by prune');
+  assert.match(JSON.stringify(latest.evidence), /context-inspection-recap/, 'stale reason should name context-inspection-recap');
+}
+
+// Repeated session recaps about the same commit should collapse to one injected line.
+{
+  const cwd = makeProject('duplicate-session-commit-injection');
+  const h = makeHarness(cwd);
+  for (const subject of ['first commit recap', 'second commit recap']) {
+    await h.tool('hybrid_memory_remember', {
+      scope: 'project',
+      kind: 'session_recap',
+      subject,
+      content: `Prior session (.): hmemory review popup polish. Outcomes: Done — committed and pushed. Commit: 6e61d8b Stabilize hmemory review overlay height.`,
+      filePaths: ['extensions/hybrid-memory.ts'],
+      salience: 5,
+    });
+  }
+  const before = await h.emit('before_agent_start', { prompt: 'hmemory review popup commit 6e61d8b', systemPrompt: 'base' });
+  const injected = String(before[0]?.systemPrompt ?? '');
+  assert.equal((injected.match(/6e61d8b/g) ?? []).length, 1, 'session recaps mentioning the same commit should dedupe in injection');
+}
+
+// Pinned user codebase notes should not appear globally unless the prompt or paths make them relevant.
+{
+  const cwd = makeProject('pinned-global-codebase-note-scope');
+  const h = makeHarness(cwd);
+  await h.tool('hybrid_memory_remember', {
+    scope: 'user',
+    kind: 'codebase_note',
+    subject: 'global copilot telemetry tap',
+    content: 'Global Copilot telemetry extension tap should only appear when directly relevant',
+    tags: ['memory-audit'],
+    filePaths: ['/tmp/outside/extensions/extension.js'],
+    pinned: true,
+    salience: 5,
+  });
+  const unrelated = await h.emit('before_agent_start', { prompt: 'polish memory extension display', systemPrompt: 'base' });
+  assert(!String(unrelated[0]?.systemPrompt ?? '').includes('Global Copilot telemetry extension tap'), 'unrelated pinned user codebase notes should stay out of injection despite generic terms');
+  const related = await h.emit('before_agent_start', { prompt: 'Copilot telemetry tap details', systemPrompt: 'base' });
+  assert(String(related[0]?.systemPrompt ?? '').includes('Global Copilot telemetry extension tap'), 'matching pinned user codebase notes should still be retrievable');
+}
+
+// Six concise validation commands should fit without hiding one behind +1 more.
+{
+  const cwd = makeProject('six-command-recipe-display');
+  const h = makeHarness(cwd);
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'recipe',
+    subject: 'six validation commands',
+    content: 'Useful project validation commands: npm test; npm run test:fixture; npm run smoke:load; npm run validate; node scripts/fixture-test.mjs; node scripts/test.mjs.',
+    tags: ['commands'],
+    pinned: true,
+    salience: 5,
+  });
+  const before = await h.emit('before_agent_start', { prompt: 'validation commands npm test fixture smoke validate', systemPrompt: 'base' });
+  const injected = String(before[0]?.systemPrompt ?? '');
+  assert(injected.includes('node scripts/test.mjs'), 'the sixth short validation command should be visible');
+  assert(!injected.includes('+1 more'), 'exactly six short validation commands should not render as +1 more');
 }
 
 // Pi settings should tune injection section limits without changing code.

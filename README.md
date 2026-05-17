@@ -8,13 +8,14 @@ It provides a small, inspectable memory layer for Pi agents:
 - User scope: `~/.pi/agent/memory/`.
 - Project scope: nearest project root `.pi/hybrid-memory/`.
 - Lexical/path/symbol retrieval first; no vector DB or external service.
-- Transient per-turn injection via `before_agent_start`, capped by lean, Pi-settings-tunable budgets with stricter per-section limits.
+- Transient per-turn injection via `before_agent_start`, capped by lean, Pi-settings-tunable budgets with stricter per-section limits and light display polish/dedupe.
 - Cheap session-start refresh: initialize memory, auto-build missing/stale repo maps for small projects, and ingest only the current/recent local sessions.
 - Lightweight repo map cache in `<project>/.pi/hybrid-memory/repomap.json`, including tracked and untracked non-ignored files, symbols, imports, commands, tools, hooks, and exports.
 - Compact working context in `<project>/.pi/hybrid-memory/context.md` for fast agent orientation.
-- Conservative session import that stores compact session recaps, trimmed validation/build command recipes, and explicit user-stated preferences while skipping delegated-agent noise.
+- Conservative session import that stores compact session recaps, trimmed validation/build command recipes, and explicit user-stated preferences while skipping delegated-agent noise and temp artifacts.
 - Lightweight auto-capture for durable preference prompts as they are submitted, plus compact current-session import/pruning after each agent turn.
 - Secret/path redaction before records are stored or injected, including plain `sk-...`, `sk-ant-...`, and `sk-proj-...` style keys.
+- Parallel-safe mutating tools via Pi's file mutation queue for JSONL appends and regenerated summaries/context.
 - Retrieved memory is injected as untrusted context, not high-priority instructions.
 - Codebase notes are marked stale during pruning when their referenced files are changed or removed.
 - Opt-in model audit/cleanup through `/hmemory-audit`, using the selected Pi model to propose validated append-only memory changes like dedupe, merge, stale, pin, and rewrite.
