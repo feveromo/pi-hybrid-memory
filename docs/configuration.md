@@ -117,7 +117,8 @@ The defaults are intentionally compact. If a large project needs different bound
     "startupRepoMapFileLimit": 500,
     "pruneActiveSessionRecaps": 12,
     "autoPruneActiveSessionRecaps": 8,
-    "bootstrapPruneActiveSessionRecaps": 12
+    "bootstrapPruneActiveSessionRecaps": 12,
+    "staleCodebaseNotesOnFileChange": true
   }
 }
 ```
@@ -137,6 +138,9 @@ You can also group repo-map and prune values if you prefer a tidier settings fil
       "activeSessionRecaps": 16,
       "autoActiveSessionRecaps": 10,
       "bootstrapActiveSessionRecaps": 16
+    },
+    "compaction": {
+      "staleCodebaseNotesOnFileChange": true
     }
   }
 }

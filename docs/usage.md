@@ -117,6 +117,7 @@ Recommended use:
 - Use `/hmemory-refresh` for routine updates.
 - Use `/hmemory-bootstrap` once when opening an older project with useful session history.
 - Use `/hmemory-prune` when session recap noise accumulates. It also marks obvious pasted-review preferences, delegated subagent recaps, and generic command-only recipes stale.
+- Pruning also marks unpinned `codebase_note` records stale when their referenced source files are changed or removed.
 
 ## Tool examples
 

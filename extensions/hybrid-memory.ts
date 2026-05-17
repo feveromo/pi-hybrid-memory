@@ -104,6 +104,7 @@ type HybridMemoryConfig = {
   pruneActiveSessionRecaps: number;
   autoPruneActiveSessionRecaps: number;
   bootstrapPruneActiveSessionRecaps: number;
+  staleCodebaseNotesOnFileChange: boolean;
 };
 
 const DEFAULT_HYBRID_MEMORY_CONFIG: HybridMemoryConfig = {
@@ -116,6 +117,7 @@ const DEFAULT_HYBRID_MEMORY_CONFIG: HybridMemoryConfig = {
   pruneActiveSessionRecaps: DEFAULT_PRUNE_ACTIVE_SESSION_RECAPS,
   autoPruneActiveSessionRecaps: DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS,
   bootstrapPruneActiveSessionRecaps: DEFAULT_PRUNE_ACTIVE_SESSION_RECAPS,
+  staleCodebaseNotesOnFileChange: true,
 };
 
 const kindEnum = ["preference", "decision", "project_fact", "codebase_note", "recipe", "work_item", "session_recap"] as const;
@@ -148,6 +150,7 @@ function mergeHybridMemoryConfig(base: HybridMemoryConfig, raw: unknown): Hybrid
 
   const repoMap: Record<string, unknown> = isPlainObject(raw.repoMap) ? raw.repoMap : {};
   const prune: Record<string, unknown> = isPlainObject(raw.prune) ? raw.prune : {};
+  const compaction: Record<string, unknown> = isPlainObject(raw.compaction) ? raw.compaction : {};
   config.maxInjectChars = clampSetting(raw.maxInjectChars, config.maxInjectChars, 1000, 30_000);
   config.repoMapFileLimit = clampSetting(raw.repoMapFileLimit ?? repoMap.fileLimit, config.repoMapFileLimit, 100, 20_000);
   config.repoMapReadMaxBytes = clampSetting(raw.repoMapReadMaxBytes ?? repoMap.readMaxBytes, config.repoMapReadMaxBytes, 16_000, 2_000_000);
@@ -156,6 +159,8 @@ function mergeHybridMemoryConfig(base: HybridMemoryConfig, raw: unknown): Hybrid
   config.pruneActiveSessionRecaps = clampSetting(raw.pruneActiveSessionRecaps ?? prune.activeSessionRecaps, config.pruneActiveSessionRecaps, 3, 100);
   config.autoPruneActiveSessionRecaps = clampSetting(raw.autoPruneActiveSessionRecaps ?? prune.autoActiveSessionRecaps, config.autoPruneActiveSessionRecaps, 3, 100);
   config.bootstrapPruneActiveSessionRecaps = clampSetting(raw.bootstrapPruneActiveSessionRecaps ?? prune.bootstrapActiveSessionRecaps, config.bootstrapPruneActiveSessionRecaps, 3, 100);
+  const staleCodebaseNotesOnFileChange = raw.staleCodebaseNotesOnFileChange ?? compaction.staleCodebaseNotesOnFileChange;
+  if (typeof staleCodebaseNotesOnFileChange === "boolean") config.staleCodebaseNotesOnFileChange = staleCodebaseNotesOnFileChange;
 
   const sectionLimits = raw.injectSectionLimits ?? raw.sectionLimits;
   if (isPlainObject(sectionLimits)) {
@@ -187,6 +192,7 @@ function publicHybridMemoryConfig(config: HybridMemoryConfig) {
     pruneActiveSessionRecaps: config.pruneActiveSessionRecaps,
     autoPruneActiveSessionRecaps: config.autoPruneActiveSessionRecaps,
     bootstrapPruneActiveSessionRecaps: config.bootstrapPruneActiveSessionRecaps,
+    staleCodebaseNotesOnFileChange: config.staleCodebaseNotesOnFileChange,
   };
 }
 
@@ -1279,9 +1285,27 @@ function noisyRecipeReason(r: MemoryRecord) {
   return commands.length && !commands.some(isUsefulProjectCommand) ? "generic-command-recipe" : undefined;
 }
 
-function staleReasonForMemory(r: MemoryRecord) {
+function staleCodebaseNoteReason(cwd: string, r: MemoryRecord) {
+  if (r.kind !== "codebase_note" || r.pinned || !r.filePaths?.length) return undefined;
+  if (!hybridMemoryConfig(cwd).staleCodebaseNotesOnFileChange) return undefined;
+  const updated = Date.parse(r.updatedAt);
+  if (!Number.isFinite(updated)) return undefined;
+  const root = findProjectRoot(cwd);
+  for (const file of sanitizeFilePaths(r.filePaths) ?? []) {
+    const abs = isAbsolute(file) ? file : join(root, file);
+    if (!existsSync(abs)) return `codebase-note-file-missing:${file}`;
+    try {
+      if (statSync(abs).mtimeMs > updated + 1000) return `codebase-note-file-changed:${file}`;
+    } catch {
+      return `codebase-note-file-unreadable:${file}`;
+    }
+  }
+  return undefined;
+}
+
+function staleReasonForMemory(cwd: string, r: MemoryRecord) {
   if (r.pinned) return undefined;
-  return noisyAutoPreferenceReason(r) ?? noisySessionRecapReason(r) ?? noisyRecipeReason(r);
+  return noisyAutoPreferenceReason(r) ?? noisySessionRecapReason(r) ?? noisyRecipeReason(r) ?? staleCodebaseNoteReason(cwd, r);
 }
 
 function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
@@ -1296,7 +1320,7 @@ function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
   };
   const bySubject = new Map<string, MemoryRecord[]>();
   for (const r of active) {
-    const hygieneReason = staleReasonForMemory(r);
+    const hygieneReason = staleReasonForMemory(cwd, r);
     if (hygieneReason) markStale(r, hygieneReason);
     const key = `${r.scope}:${r.kind}:${r.subject.toLowerCase()}`;
     const arr = bySubject.get(key) ?? [];
@@ -1337,7 +1361,7 @@ function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
     recaps.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     for (const r of recaps.slice(recapLimit(scope))) markStale(r, "old-session-recap");
   }
-  const oldRecaps = projectRecaps.slice(maxActiveSessionRecaps).filter((r) => !staleReasonForMemory(r));
+  const oldRecaps = projectRecaps.slice(maxActiveSessionRecaps).filter((r) => !staleReasonForMemory(cwd, r));
   let staleMarked = 0;
   for (const key of staleIds) {
     const { scope, id } = parseScopedId(key);
@@ -1962,7 +1986,7 @@ function recordAuditBlock(cwd: string, r: MemoryRecord) {
   const tags = (r.tags ?? []).slice(0, 8).join(", ");
   const files = (sanitizeFilePaths(r.filePaths) ?? []).slice(0, 8).join(", ");
   const symbols = (r.symbols ?? []).slice(0, 8).join(", ");
-  const hygiene = staleReasonForMemory(r);
+  const hygiene = staleReasonForMemory(cwd, r);
   return [
     `### ${recordKey(r)}`,
     `scope: ${r.scope}`,

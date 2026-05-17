@@ -76,6 +76,8 @@ For each mappable file it records:
 
 The map is used for `/hmemory-repo`, `context.md`, dashboard summaries, and prompt-time repo matches. Repo-map file and read-size caps are configurable through Pi settings while remaining bounded by safe min/max ranges.
 
+During pruning, active unpinned `codebase_note` records are marked stale if a referenced file is missing or has changed since the memory was last updated. This keeps source files ahead of old memory claims.
+
 ## Model audit and cleanup
 
 `/hmemory-audit` builds a bounded audit packet from active records, local hygiene flags, duplicate-subject hints, and repo-map freshness. The packet is redacted with the same best-effort secret redaction used for storage and injection.

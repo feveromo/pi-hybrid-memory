@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -218,6 +218,29 @@ function makeProject(name) {
   await h.command('hmemory-context');
   const context = readFileSync(join(projectMemoryDir(cwd), 'context.md'), 'utf8');
   assert(context.includes('added.ts added after repo map generation'), 'context should report added files as stale');
+}
+
+// Codebase notes should become stale when referenced source files change.
+{
+  const cwd = makeProject('codebase-note-staleness');
+  mkdirSync(join(cwd, 'src'), { recursive: true });
+  const sourceFile = join(cwd, 'src', 'tracked.ts');
+  writeFileSync(sourceFile, 'export const tracked = 1;\n');
+  const h = makeHarness(cwd);
+  const remembered = await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'codebase_note',
+    subject: 'tracked source behavior',
+    content: 'src/tracked.ts currently exports tracked = 1',
+    filePaths: ['src/tracked.ts'],
+    salience: 4,
+  });
+  const future = new Date(Date.now() + 5000);
+  utimesSync(sourceFile, future, future);
+  await h.command('hmemory-prune');
+  const latest = readRecords(cwd, 'project').filter((r) => r.id === remembered.details.id).at(-1);
+  assert.equal(latest.status, 'stale', 'changed file should mark related codebase_note stale');
+  assert.match(JSON.stringify(latest.evidence), /codebase-note-file-changed:src\/tracked\.ts/, 'stale reason should name the changed file');
 }
 
 // Pi settings should tune injection section limits without changing code.
