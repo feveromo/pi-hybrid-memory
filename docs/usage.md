@@ -70,6 +70,23 @@ Keys inside the review overlay:
 - `d` — mark done
 - `q` / escape — close
 
+### Let the selected Pi model clean memory
+
+```text
+/hmemory-audit
+/hmemory-audit preview
+/hmemory-audit apply
+/hmemory-audit apply session recaps
+```
+
+The command sends a bounded, redacted packet of active memory records to the currently selected Pi model. The model returns a structured cleanup plan. The extension validates the plan and applies only append-only changes: mark stale/done/superseded, pin/unpin, rewrite a record head, create a clean record, or merge duplicates into a new superseding record.
+
+In interactive mode, `/hmemory-audit` asks before applying. Use `preview` for report-only, or `apply` to skip confirmation. Reports are saved under:
+
+```text
+<project>/.pi/hybrid-memory/audits/
+```
+
 ## Repo-map workflow
 
 The repo map indexes file paths, file kinds, imports, symbols, commands, tools, hooks, and exports for small/medium projects.
@@ -119,6 +136,7 @@ Agents can use the registered tools directly:
 
 Useful tools:
 
+- `/hmemory-audit` for model-assisted cleanup and organization
 - `hybrid_memory_remember`
 - `hybrid_memory_search`
 - `hybrid_memory_forget`
@@ -135,6 +153,7 @@ Useful tools:
 <project>/.pi/hybrid-memory/summary.md
 <project>/.pi/hybrid-memory/context.md
 <project>/.pi/hybrid-memory/repomap.json
+<project>/.pi/hybrid-memory/audits/*.md
 ```
 
 These files are intentionally human-readable so you can audit what will influence future turns.

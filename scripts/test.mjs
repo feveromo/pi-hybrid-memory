@@ -37,7 +37,7 @@ assert.match(source, /const MAX_INJECT_CHARS = 4200;/, 'memory injection should 
 assert.match(source, /config\.maxInjectChars/, 'memory injection cap should be configurable');
 assert.match(source, /config\.injectSectionLimits\[title\]/, 'per-section injection limits should be configurable');
 assert.match(source, /function visibleWidth/, 'TUI padding should use terminal cell widths for Unicode icons');
-assert.match(source, /import \{ Text \} from "@earendil-works\/pi-tui";/, 'custom tool renderers should use the official Pi TUI Text component');
+assert.match(source, /import \{[^}]*Text[^}]*\} from "@earendil-works\/pi-tui";/, 'custom tool renderers should use the official Pi TUI Text component');
 assert.equal(packageJson.peerDependencies?.['@earendil-works/pi-tui'], '*', 'package should declare pi-tui as a peer dependency for custom renderers');
 assert.match(source, /function memoryKindIcon/, 'memory review and tool renderers should share kind icons');
 assert.match(source, /case "preference": return "💜";/, 'preference memories should keep a friendly icon');
@@ -45,6 +45,14 @@ assert.match(source, /const labelText = padVisible\(reviewKindLabel\(r\), 18\)/,
 assert.match(source, /const pin = padVisible\(r\.pinned \? warp\.pink\("📌"\) : "", 2\)/, 'memory review pinned marker should keep the friendly pinned emoji in a fixed-width slot');
 assert.match(source, /const REVIEW_LIST_ROWS = 11;/, 'memory review should use a fixed-size list viewport');
 assert.match(source, /for \(let i = 0; i < REVIEW_LIST_ROWS; i\+\+\)/, 'memory review should pad list rows to keep overlay height stable');
+assert.match(source, /pi\.registerCommand\("hmemory-audit"/, 'memory audit command should be registered');
+assert.match(source, /complete\(\n    ctx\.model,\n    \{ systemPrompt: MEMORY_AUDIT_SYSTEM_PROMPT, messages: \[message\] \}/, 'memory audit should use the selected Pi model through pi-ai complete');
+assert.match(source, /function applyMemoryAuditPlan/, 'memory audit should be able to apply validated structured cleanup actions');
+assert.match(source, /type\": \"merge_records\"/, 'memory audit prompt should support model-proposed dedupe merges');
+assert.match(source, /lastAuditAppliedAt/, 'memory audit should persist apply metadata in project state');
+assert.match(source, /function createMemoryAuditProgress/, 'memory audit should show a staged progress UI while the model call runs');
+assert.match(source, /CancellableLoader/, 'memory audit progress UI should remain cancellable');
+assert.doesNotMatch(source.match(/async function generateMemoryAudit[\s\S]*?\n}/)?.[0] ?? '', /temperature:/, 'memory audit should not pass temperature because Codex models reject it');
 assert.match(source, /const fileText = files\.length \? files\.join\("  "\) : warp\.dim\("—"\);/, 'memory review should reserve the files row to keep overlay height stable');
 assert.match(source, /for \(let i = 0; i < REVIEW_DETAIL_ROWS; i\+\+\) lines\.push\(row\(detailRows\[i\] \?\? ""\)\);/, 'memory review should render a fixed-size details footer');
 assert.match(source, /function memoryToolCall/, 'hybrid memory tools should share polished call rendering helpers');

@@ -10,6 +10,7 @@
 - Conservative: only durable-looking preferences and compact recaps are auto-mined.
 - Untrusted: retrieved memory is injected as context, not as instructions.
 - Repo-aware: a lightweight repo map helps retrieval without heavyweight indexing.
+- Model-assisted but controlled: `/hmemory-audit` can clean and organize memory through validated append-only actions.
 
 ## Storage model
 
@@ -34,7 +35,7 @@ A memory record has:
 - optional `pinned`
 - timestamps
 
-Status updates append a newer version of the same `scope:id`. Retrieval uses the latest version.
+Status updates append a newer version of the same `scope:id`. Retrieval uses the latest version. Model-audit cleanup uses the same append-only path; merges create a new record and mark source records `superseded` rather than deleting them.
 
 ## Project root detection
 
@@ -74,6 +75,20 @@ For each mappable file it records:
 - size
 
 The map is used for `/hmemory-repo`, `context.md`, dashboard summaries, and prompt-time repo matches. Repo-map file and read-size caps are configurable through Pi settings while remaining bounded by safe min/max ranges.
+
+## Model audit and cleanup
+
+`/hmemory-audit` builds a bounded audit packet from active records, local hygiene flags, duplicate-subject hints, and repo-map freshness. The packet is redacted with the same best-effort secret redaction used for storage and injection.
+
+The selected Pi model returns strict JSON with a short report plus structured actions. Supported actions are:
+
+- `set_status` — mark records `stale`, `done`, or `superseded`
+- `set_pinned` — pin or unpin records
+- `update_record` — append a cleaner head for an existing record
+- `create_record` — add a compact new record
+- `merge_records` — create one clean superseding record and mark sources superseded
+
+The extension validates ids, scopes, kinds, statuses, and field sizes before applying. Reports are saved in `<project>/.pi/hybrid-memory/audits/`.
 
 ## Hooks
 

@@ -40,6 +40,19 @@ Retrieved memory is injected into prompts inside a `<hybrid_memory>` block with 
 
 This is important because old conversation text can contain stale instructions, adversarial text, or outdated project assumptions.
 
+## Model audit safety
+
+`/hmemory-audit` is explicit and opt-in. It sends a bounded, best-effort-redacted packet of active memory records to the currently selected Pi model/provider, then validates the model's structured cleanup plan before applying anything.
+
+Applied changes are append-only:
+
+- stale/done/superseded status updates append a newer record head
+- pin/unpin and rewrites append a newer record head
+- merges create a new superseding record and mark source records superseded
+- records are not physically deleted
+
+In interactive mode, `/hmemory-audit` asks before applying unless you pass `apply`. Use `preview` for report-only. Reports are saved under `<project>/.pi/hybrid-memory/audits/`.
+
 ## Session import safety
 
 Session import is conservative:
@@ -68,6 +81,7 @@ If you intentionally commit memory files for a shared fixture or demo, review th
 /hmemory-files
 /hmemory-health
 /hmemory-review
+/hmemory-audit preview
 /hmemory-search token
 /hmemory-search password
 /hmemory-search secret

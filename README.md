@@ -16,6 +16,7 @@ It provides a small, inspectable memory layer for Pi agents:
 - Lightweight auto-capture for durable preference prompts as they are submitted, plus compact current-session import/pruning after each agent turn.
 - Secret/path redaction before records are stored or injected, including plain `sk-...`, `sk-ant-...`, and `sk-proj-...` style keys.
 - Retrieved memory is injected as untrusted context, not high-priority instructions.
+- Opt-in model audit/cleanup through `/hmemory-audit`, using the selected Pi model to propose validated append-only memory changes like dedupe, merge, stale, pin, and rewrite.
 - Pi compaction/branch summaries can be mined into durable memories through Pi session hooks.
 
 ## Documentation
@@ -49,6 +50,7 @@ It provides a small, inspectable memory layer for Pi agents:
 - `/hmemory-health` — show memory health, duplicate hints, and repo-map staleness.
 - `/hmemory-show <id>` — show one memory record.
 - `/hmemory-review` — review/pin/stale/done active memories in a TUI overlay.
+- `/hmemory-audit [preview|apply] [focus]` — use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes.
 - `/hmemory-prune [maxActiveRecaps]` — mark duplicate/old session recaps stale and optionally create a rollup.
 - `/hmemory-dashboard [full]` — open a styled TUI overlay with memory/repo health; `full` shows command/tool details.
 - `/hmemory-widget [off]` — show/hide a compact memory widget above the editor.
@@ -75,6 +77,7 @@ It provides a small, inspectable memory layer for Pi agents:
   active.json   # generated active-work index
   context.md
   repomap.json
+  audits/      # model-generated audit reports
   state.json
 ```
 
@@ -111,4 +114,4 @@ npm run validate
 
 ## Notes / future work
 
-Still intentionally simple: no vector DB, no external service, and no automatic pruning daemon. Startup/turn auto-refresh is deliberately bounded, compact, local, and lightly configurable through Pi settings; use `/hmemory-bootstrap` for deeper historical backfills. Future hardening could add stale-codebase-note invalidation tied to file mtimes.
+Still intentionally simple: no vector DB, no daemon, and no external service by default. `/hmemory-audit` is explicit and uses whatever Pi model/provider you selected, with a redacted bounded packet and append-only validated changes. Startup/turn auto-refresh is deliberately bounded, compact, local, and lightly configurable through Pi settings; use `/hmemory-bootstrap` for deeper historical backfills. Future hardening could add stale-codebase-note invalidation tied to file mtimes.
