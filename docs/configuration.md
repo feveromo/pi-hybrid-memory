@@ -54,6 +54,7 @@ Project memory:
   active.json   # generated active-work index
   context.md
   repomap.json
+  audits/       # model audit reports
   state.json
 ```
 
@@ -90,6 +91,7 @@ For larger or older projects, use an explicit command:
 /hmemory-config
 /hmemory-prune [maxActiveRecaps]
 /hmemory-review
+/hmemory-audit [preview|apply] [focus]
 /hmemory-forget <id> [stale|done|superseded]
 ```
 
