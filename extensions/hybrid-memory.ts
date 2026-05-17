@@ -328,10 +328,30 @@ function isLowSignalSessionFilePath(path: string) {
     || /\.(?:png|jpe?g|gif|webp|mp4|mov|webm)$/i.test(p);
 }
 
+function isPackageDocsPath(path: string) {
+  const p = path.replace(/\\/g, "/");
+  return /(?:^|\/)\.local\/lib\/node_modules\//.test(p)
+    || /(?:^|\/)node_modules\/[^/]+(?:\/[^/]+)?\/(?:docs|examples|README\.md)(?:\/|$)/i.test(p);
+}
+
+function isProjectDisplayPath(cwd: string, path: string) {
+  if (isAbsolute(path)) return pathContains(findProjectRoot(cwd), path);
+  return !path.startsWith("..") && !path.startsWith("~") && !isPackageDocsPath(path);
+}
+
 function recordDisplayFilePaths(r: MemoryRecord, max: number) {
   const paths = displayFilePaths(r.filePaths, 24);
   const filtered = r.kind === "session_recap" ? paths.filter((p) => !isLowSignalSessionFilePath(p)) : paths;
   return filtered.slice(0, max);
+}
+
+function injectedRecordFilePaths(cwd: string, r: MemoryRecord, max: number) {
+  const paths = recordDisplayFilePaths(r, 24);
+  if (r.kind !== "session_recap") return paths.slice(0, max);
+  const projectLocal = paths.filter((p) => isProjectDisplayPath(cwd, p));
+  const withoutPackageDocs = paths.filter((p) => !isPackageDocsPath(p));
+  const preferred = projectLocal.length ? projectLocal : withoutPackageDocs.length ? withoutPackageDocs : paths;
+  return preferred.slice(0, max);
 }
 
 function recordHasProjectPath(cwd: string, r: MemoryRecord) {
@@ -1978,11 +1998,11 @@ function dedupeInjectionRecords(records: MemoryRecord[]) {
   return out;
 }
 
-function memoryLine(r: MemoryRecord) {
+function memoryLine(cwd: string, r: MemoryRecord) {
   const maxContent = r.kind === "session_recap" ? 240 : r.kind === "recipe" ? 220 : 320;
   const content = compactText(redactSecrets(displayContent(r)), maxContent);
-  const files = recordDisplayFilePaths(r, r.kind === "session_recap" ? 3 : r.kind === "recipe" ? 4 : 6);
-  const totalDisplayFiles = recordDisplayFilePaths(r, 24).length;
+  const files = injectedRecordFilePaths(cwd, r, r.kind === "session_recap" ? 3 : r.kind === "recipe" ? 4 : 6);
+  const totalDisplayFiles = injectedRecordFilePaths(cwd, r, 24).length;
   const fileSuffix = files.length ? ` (files: ${files.join(", ")}${totalDisplayFiles > files.length ? ", …" : ""})` : "";
   return `${r.pinned ? "📌 " : ""}${content}${fileSuffix}`;
 }
@@ -2016,7 +2036,7 @@ function buildInjection(cwd: string, prompt: string) {
     if (sectionLimit <= 0) continue;
     any = true;
     lines.push(`## ${title}`);
-    for (const r of polished.slice(0, sectionLimit)) lines.push(`- ${memoryLine(r)}`);
+    for (const r of polished.slice(0, sectionLimit)) lines.push(`- ${memoryLine(cwd, r)}`);
     lines.push("");
   }
   const repoMap = readRepoMap(cwd);
