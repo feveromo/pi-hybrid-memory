@@ -309,7 +309,7 @@ function makeProject(name) {
     kind: 'session_recap',
     subject: 'messy imported session',
     content: 'Prior session (.): first rough prompt | second useful prompt | +1 more. Outcomes: Done and validated. ## Changed files - `extensions/hybrid-memory.ts`. Tools: bash, read.',
-    filePaths: ['/tmp/pi-subagents-uid-1000/chain-runs/abc/progress.md', '/home/example/Pictures/Screenshots/Screenshot From 2026-05-16.png', 'extensions/hybrid-memory.ts'],
+    filePaths: ['/tmp/pi-subagents-uid-1000/chain-runs/abc/progress.md', '/home/example/Pictures/Screenshots/Screenshot From 2026-05-16.png', '/home/example/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md', 'extensions/hybrid-memory.ts'],
     salience: 5,
   });
   const before = await h.emit('before_agent_start', { prompt: 'validated rough prompt hybrid memory', systemPrompt: 'base' });
@@ -319,6 +319,7 @@ function makeProject(name) {
   assert(!injected.includes('+1 more'), 'session recap display should remove transcript counters');
   assert(!injected.includes('chain-runs'), 'session recap file suffix should hide temp subagent artifacts');
   assert(!injected.includes('Pictures/Screenshots'), 'session recap file suffix should hide low-signal screenshot paths');
+  assert(!injected.includes('.local/lib/node_modules'), 'session recap file suffix should prefer project files over package docs paths');
   assert(injected.includes('extensions/hybrid-memory.ts'), 'session recap file suffix should keep useful project files');
 }
 

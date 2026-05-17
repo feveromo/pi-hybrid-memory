@@ -49,7 +49,7 @@ Before an agent starts, the extension:
 2. Scores active records by lexical/path/symbol relevance.
 3. Considers pinned active records and active work items, while keeping global pinned codebase notes scoped to matching prompts or project paths. Inactive records (`done`, `stale`, or `superseded`) are not injected even if still pinned.
 4. Groups results into sections such as user preferences, project decisions, recipes, session recaps, and codebase notes.
-5. Lightly polishes the display: command recipes are normalized/deduped, session recaps render as concise outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, global technical notes need distinctive prompt/path matches, and truncation prefers word boundaries.
+5. Lightly polishes the display: command recipes are normalized/deduped, session recaps render as concise outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, session recap file suffixes prefer project-local paths over package/docs paths, global technical notes need distinctive prompt/path matches, and truncation prefers word boundaries.
 6. Adds relevant repo-map matches when available.
 7. Injects a capped `<hybrid_memory>` block into the system prompt. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
 

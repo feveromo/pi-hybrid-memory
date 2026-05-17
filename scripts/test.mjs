@@ -50,6 +50,10 @@ assert.match(source, /function dedupeInjectionRecords/, 'injected memory should 
 assert.match(source, /function shouldInjectSessionRecap/, 'session recap injection should hide diagnostic context-inspection recaps');
 assert.match(source, /function sessionRecapCommitKeys/, 'session recap injection should collapse repeated commit recaps');
 assert.match(source, /function isLowSignalSessionFilePath/, 'session recap file displays should hide low-signal screenshot/media paths');
+assert.match(source, /function isPackageDocsPath/, 'session recap file displays should identify package/docs paths as low-priority');
+assert.match(source, /function injectedRecordFilePaths/, 'injected file suffixes should prefer project-local session recap paths');
+assert.match(source, /const projectLocal = paths\.filter\(\(p\) => isProjectDisplayPath\(cwd, p\)\);/, 'session recap injection should prefer project-local file paths');
+assert.match(source, /const withoutPackageDocs = paths\.filter\(\(p\) => !isPackageDocsPath\(p\)\);/, 'session recap injection should hide package/docs paths when better paths exist');
 assert.match(source, /function distinctiveQueryTerms/, 'global user technical memories should require distinctive prompt matches');
 assert.match(source, /const RECIPE_DISPLAY_COMMAND_LIMIT = 6;/, 'recipe injection should show six short validation commands before +N more');
 assert.match(source, /function shouldInjectPinnedByDefault/, 'pinned global records should still be scoped before default injection');
