@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/feveromo/pi-hybrid-memory)
+
 # pi-hybrid-memory
 
 Local-first hybrid memory for Pi.
