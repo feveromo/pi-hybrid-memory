@@ -2810,7 +2810,7 @@ export default function (pi: ExtensionAPI) {
       let auditError: unknown;
       try {
         if (ctx.hasUI) {
-          audit = await ctx.ui.custom<MemoryAuditResult | null>((tui, theme, _kb, done) => {
+          const visualAudit = await ctx.ui.custom<MemoryAuditResult | null>((tui, theme, _kb, done) => {
             const progress = createMemoryAuditProgress(tui, theme, ctx.model ? modelLabel(ctx.model) : "selected model", options.query);
             progress.setOnAbort(() => done(null));
             generateMemoryAudit(ctx.cwd, ctx, options.query, progress.signal, progress.update)
@@ -2820,10 +2820,12 @@ export default function (pi: ExtensionAPI) {
                 done(null);
               });
             return progress.component;
-          });
+          }) as MemoryAuditResult | null | undefined;
           if (auditError) throw auditError;
-          if (!audit) return ctx.ui.notify("memory audit cancelled", "info");
-        } else {
+          if (visualAudit === null) return ctx.ui.notify("memory audit cancelled", "info");
+          audit = visualAudit;
+        }
+        if (!audit) {
           audit = await generateMemoryAudit(ctx.cwd, ctx, options.query);
           if (!audit) return;
         }

@@ -70,6 +70,9 @@ assert.match(source, /type\": \"merge_records\"/, 'memory audit prompt should su
 assert.match(source, /lastAuditAppliedAt/, 'memory audit should persist apply metadata in project state');
 assert.match(source, /function createMemoryAuditProgress/, 'memory audit should show a staged progress UI while the model call runs');
 assert.match(source, /CancellableLoader/, 'memory audit progress UI should remain cancellable');
+assert.match(source, /const visualAudit = await ctx\.ui\.custom<MemoryAuditResult \| null>/, 'memory audit should distinguish visual UI result from non-visual fallback');
+assert.match(source, /if \(visualAudit === null\) return ctx\.ui\.notify\("memory audit cancelled", "info"\);/, 'memory audit should treat null as explicit user cancel');
+assert.match(source, /if \(!audit\) \{\n          audit = await generateMemoryAudit/, 'memory audit should fall back when custom UI is unavailable in non-TUI modes');
 assert.doesNotMatch(source.match(/async function generateMemoryAudit[\s\S]*?\n}/)?.[0] ?? '', /temperature:/, 'memory audit should not pass temperature because Codex models reject it');
 assert.match(source, /const fileText = files\.length \? files\.join\("  "\) : warp\.dim\("—"\);/, 'memory review should reserve the files row to keep overlay height stable');
 assert.match(source, /for \(let i = 0; i < REVIEW_DETAIL_ROWS; i\+\+\) lines\.push\(row\(detailRows\[i\] \?\? ""\)\);/, 'memory review should render a fixed-size details footer');
