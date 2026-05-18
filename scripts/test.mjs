@@ -67,6 +67,14 @@ assert.match(source, /const labelText = padVisible\(reviewKindLabel\(r\), 18\)/,
 assert.match(source, /const pin = padVisible\(r\.pinned \? warp\.pink\("📌"\) : "", 2\)/, 'memory review pinned marker should keep the friendly pinned emoji in a fixed-width slot');
 assert.match(source, /const REVIEW_LIST_ROWS = 11;/, 'memory review should use a fixed-size list viewport');
 assert.match(source, /for \(let i = 0; i < REVIEW_LIST_ROWS; i\+\+\)/, 'memory review should pad list rows to keep overlay height stable');
+assert.match(source, /pi\.registerCommand\("hmemory-doctor"/, 'memory doctor command should be registered for deterministic curation');
+assert.match(source, /function memoryStatsSnapshot/, 'memory stats should distinguish active/inactive counts by scope/status/kind');
+assert.match(source, /function searchRecordsWithOptions/, 'memory search should support filtered active/all scope/kind/status queries');
+assert.match(source, /function scoreRecordWithSearchOptions/, 'status-specific inactive searches should not be hidden by normal stale/superseded scoring penalties');
+assert.match(source, /name: "hybrid_memory_doctor"/, 'memory doctor should be available as a tool for agents');
+assert.match(source, /writeMemoryDoctorReport/, 'memory doctor should write a reviewable before/after report');
+assert.match(source, /status: Type\.Optional\(StringEnum\(searchStatusEnum\)\)/, 'hybrid_memory_search should expose status filters');
+assert.match(source, /includeInactive: Type\.Optional\(Type\.Boolean\(\)\)/, 'hybrid_memory_search should expose an includeInactive/all-history option');
 assert.match(source, /pi\.registerCommand\("hmemory-audit"/, 'memory audit command should be registered');
 assert.match(source, /complete\(\n    ctx\.model,\n    \{ systemPrompt: MEMORY_AUDIT_SYSTEM_PROMPT, messages: \[message\] \}/, 'memory audit should use the selected Pi model through pi-ai complete');
 assert.match(source, /function applyMemoryAuditPlan/, 'memory audit should be able to apply validated structured cleanup actions');

@@ -119,6 +119,67 @@ function makeProject(name) {
   for (const item of inactive) assert(!injected.includes(item.content), `${item.status} pinned record should not be injected`);
 }
 
+// Search/stats/doctor should make append-only curation ergonomic.
+{
+  const cwd = makeProject('search-stats-doctor');
+  const h = makeHarness(cwd);
+  const staleRecipe = await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'recipe',
+    subject: 'obsolete validation recipe',
+    content: 'Useful project validation commands: npm test',
+    tags: ['commands'],
+    salience: 3,
+  });
+  await h.tool('hybrid_memory_forget', { id: staleRecipe.details.id, scope: 'project', status: 'stale' });
+  const activeSearch = await h.tool('hybrid_memory_search', { query: 'obsolete validation recipe', limit: 10 });
+  assert.equal(activeSearch.details.hits.length, 0, 'search should default to active records');
+  const staleSearch = await h.tool('hybrid_memory_search', { query: 'obsolete validation recipe', status: 'stale', limit: 10 });
+  assert.equal(staleSearch.details.hits.length, 1, 'search status filter should find stale records');
+
+  const supersededDecision = await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'decision',
+    subject: 'tiny retired note',
+    content: 'Tiny retired note',
+    salience: 3,
+  });
+  await h.tool('hybrid_memory_forget', { id: supersededDecision.details.id, scope: 'project', status: 'superseded' });
+  const supersededSearch = await h.tool('hybrid_memory_search', { query: 'tiny', status: 'superseded', limit: 10 });
+  assert.equal(supersededSearch.details.hits.length, 1, 'status-specific search should find superseded records even when normal scoring would penalize them');
+
+  const stats = await h.tool('hybrid_memory_stats');
+  assert.equal(stats.details.byStatus.stale, 1, 'stats should count stale append-only heads separately');
+  assert.equal(stats.details.byStatus.superseded, 1, 'stats should count superseded append-only heads separately');
+  assert.equal(stats.details.active, 0, 'stats should report active heads separately from total history');
+
+  const first = await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'decision',
+    subject: 'duplicate policy',
+    content: 'Keep one duplicate policy memory',
+    salience: 3,
+  });
+  const second = await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'decision',
+    subject: 'duplicate policy',
+    content: 'Duplicate policy memory should be staled by doctor',
+    salience: 2,
+  });
+  const preview = await h.tool('hybrid_memory_doctor', { mode: 'preview' });
+  assert(preview.details.plan.candidates.some((c) => c.reason === 'duplicate-subject'), 'doctor preview should identify duplicate subject candidates');
+  assert(existsSync(preview.details.reportPath), 'doctor preview should write a reviewable report');
+  assert.equal(readRecords(cwd, 'project').filter((r) => r.id === first.details.id).at(-1).status, 'active', 'doctor preview should not mutate records');
+
+  const applied = await h.tool('hybrid_memory_doctor', { mode: 'apply' });
+  assert(applied.details.applyResult.applied >= 1, 'doctor apply should append stale statuses for safe candidates');
+  const latestFirst = readRecords(cwd, 'project').filter((r) => r.id === first.details.id).at(-1);
+  const latestSecond = readRecords(cwd, 'project').filter((r) => r.id === second.details.id).at(-1);
+  assert([latestFirst.status, latestSecond.status].includes('stale'), 'one duplicate policy record should be marked stale');
+  assert(existsSync(applied.details.reportPath), 'doctor apply should write an apply report');
+}
+
 // Stored records should redact common tokens and sensitive paths before they hit JSONL.
 {
   const cwd = makeProject('redaction');

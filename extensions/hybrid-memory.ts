@@ -127,6 +127,8 @@ const DEFAULT_HYBRID_MEMORY_CONFIG: HybridMemoryConfig = {
 const kindEnum = ["preference", "decision", "project_fact", "codebase_note", "recipe", "work_item", "session_recap"] as const;
 const scopeEnum = ["user", "project"] as const;
 const statusEnum = ["active", "done", "superseded", "stale"] as const;
+const searchStatusEnum = ["active", "done", "superseded", "stale", "all"] as const;
+const doctorModeEnum = ["preview", "apply"] as const;
 const repoStalenessCache = new Map<string, RepoStalenessCacheEntry>();
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -216,9 +218,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+let memoryIdCounter = 0;
+
 function safeId(kind: string, subject: string) {
   const key = `${kind}-${subject}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 56) || "memory";
-  return `${key}-${Date.now().toString(36)}`;
+  return `${key}-${Date.now().toString(36)}-${(memoryIdCounter++).toString(36)}`;
 }
 
 function hashString(text: string) {
@@ -495,8 +499,7 @@ function recordHaystack(r: MemoryRecord) {
   return [r.kind, r.subject, r.content, ...(r.tags ?? []), ...(r.filePaths ?? []), ...(r.symbols ?? [])].join(" ").toLowerCase();
 }
 
-function scoreRecord(r: MemoryRecord, query: string, cwd: string) {
-  const active = isActiveRecord(r);
+function lexicalRecordScore(r: MemoryRecord, query: string) {
   const q = tokenize(query);
   const h = recordHaystack(r);
   let lexicalScore = 0;
@@ -506,6 +509,12 @@ function scoreRecord(r: MemoryRecord, query: string, cwd: string) {
     if (r.symbols?.some((s) => s.toLowerCase() === t)) lexicalScore += 4;
     if (r.tags?.some((tag) => tag.toLowerCase() === t)) lexicalScore += 3;
   }
+  return lexicalScore;
+}
+
+function scoreRecord(r: MemoryRecord, query: string, cwd: string) {
+  const active = isActiveRecord(r);
+  const lexicalScore = lexicalRecordScore(r, query);
   if (lexicalScore <= 0) return shouldInjectPinnedByDefault(cwd, r) ? 12 + r.salience : 0;
   let score = lexicalScore;
   if (active) score += 4;
@@ -521,6 +530,35 @@ function searchRecords(cwd: string, query: string, limit = 12) {
   return latestRecords(allRecords(cwd))
     .map((record) => ({ record, score: scoreRecord(record, query, cwd) }))
     .filter((x) => isActiveRecord(x.record) && x.score > 0 && shouldIncludeSearchHit(cwd, x.record, query))
+    .sort((a, b) => b.score - a.score || b.record.updatedAt.localeCompare(a.record.updatedAt))
+    .slice(0, limit);
+}
+
+function recordStatus(r: MemoryRecord): MemoryStatus {
+  return r.status ?? "active";
+}
+
+function recordMatchesSearchOptions(r: MemoryRecord, options: SearchRecordsOptions = {}) {
+  const wantedStatus = options.status ?? (options.includeInactive ? "all" : "active");
+  if (wantedStatus !== "all" && recordStatus(r) !== wantedStatus) return false;
+  if (options.scope && r.scope !== options.scope) return false;
+  if (options.kind && r.kind !== options.kind) return false;
+  return true;
+}
+
+function scoreRecordWithSearchOptions(r: MemoryRecord, query: string, cwd: string, options: SearchRecordsOptions = {}) {
+  const targetedInactiveStatus = options.status && options.status !== "active" && options.status !== "all";
+  if (targetedInactiveStatus && recordStatus(r) === options.status) {
+    const lexicalScore = lexicalRecordScore(r, query);
+    if (lexicalScore > 0) return lexicalScore + r.salience + (r.pinned ? 4 : 0);
+  }
+  return scoreRecord(r, query, cwd);
+}
+
+function searchRecordsWithOptions(cwd: string, query: string, limit = 12, options: SearchRecordsOptions = {}) {
+  return latestRecords(allRecords(cwd))
+    .map((record) => ({ record, score: scoreRecordWithSearchOptions(record, query, cwd, options) }))
+    .filter((x) => recordMatchesSearchOptions(x.record, options) && x.score > 0 && shouldIncludeSearchHit(cwd, x.record, query))
     .sort((a, b) => b.score - a.score || b.record.updatedAt.localeCompare(a.record.updatedAt))
     .slice(0, limit);
 }
@@ -559,6 +597,14 @@ function appendRecordIfChanged(cwd: string, r: MemoryRecord) {
 }
 
 type UpdateRecordResult = { updated?: MemoryRecord; ambiguous?: MemoryRecord[] };
+
+type SearchStatusFilter = typeof searchStatusEnum[number];
+type SearchRecordsOptions = { scope?: MemoryScope; kind?: MemoryKind; status?: SearchStatusFilter; includeInactive?: boolean };
+type MemoryStatsSnapshot = ReturnType<typeof memoryStatsSnapshot>;
+type MemoryDoctorCandidate = { record: MemoryRecord; action: "mark_stale"; reason: string };
+type MemoryScopeHint = { record: MemoryRecord; suggestedScope: MemoryScope; reason: string };
+type MemoryDoctorPlan = { generatedAt: string; maxActiveSessionRecaps: number; before: MemoryStatsSnapshot; candidates: MemoryDoctorCandidate[]; scopeHints: MemoryScopeHint[] };
+type MemoryDoctorApplyResult = { applied: number; updated: string[]; skipped: string[] };
 
 type PruneResult = { staleMarked: number; rollupCreated?: MemoryRecord; duplicateGroups: number };
 
@@ -813,17 +859,103 @@ function repoMapStalenessCached(cwd: string, ttlMs = REPO_STALENESS_CACHE_TTL_MS
   return result;
 }
 
-function memoryHealth(cwd: string) {
+function emptyStatusCounts(): Record<MemoryStatus, number> {
+  return { active: 0, done: 0, superseded: 0, stale: 0 };
+}
+
+function emptyKindCounts(): Record<MemoryKind, number> {
+  return Object.fromEntries(kindEnum.map((kind) => [kind, 0])) as Record<MemoryKind, number>;
+}
+
+function hasProjectLocalPath(cwd: string, r: MemoryRecord) {
+  const root = findProjectRoot(cwd);
+  for (const file of sanitizeFilePaths(r.filePaths) ?? []) {
+    if (isMemoryArtifactPath(file)) continue;
+    if (isAbsolute(file)) {
+      if (pathContains(root, file)) return true;
+    } else if (!file.startsWith("..") && !file.startsWith("~")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function scopeMismatchReason(cwd: string, r: MemoryRecord): { suggestedScope: MemoryScope; reason: string } | undefined {
+  if (!isActiveRecord(r)) return undefined;
+  const hasProjectPath = hasProjectLocalPath(cwd, r);
+  if (r.scope === "project" && r.kind === "preference") return { suggestedScope: "user", reason: "preferences are usually user-level unless tied to one repo" };
+  if (r.scope === "project" && (r.tags ?? []).some((tag) => tag === "user-stated" || tag === "auto-captured")) return { suggestedScope: "user", reason: "user-stated imported memory landed in project scope" };
+  if (r.scope === "user" && ["codebase_note", "project_fact", "recipe"].includes(r.kind) && hasProjectPath) return { suggestedScope: "project", reason: "technical memory references files in the current project" };
+  if (r.scope === "project" && ["codebase_note", "project_fact", "recipe"].includes(r.kind) && !hasProjectPath && /\b(?:openwarp|zed|deepseek|gnome|nautilus|desktop|systemd|shell|bashrc|vscode|copilot)\b/i.test(`${r.subject} ${r.content}`)) return { suggestedScope: "user", reason: "machine/setup memory looks global rather than project-local" };
+  return undefined;
+}
+
+function scopeMismatchHints(cwd: string, records = activeRecords(latestRecords(allRecords(cwd)))): MemoryScopeHint[] {
+  return records
+    .map((record) => ({ record, hint: scopeMismatchReason(cwd, record) }))
+    .filter((x): x is { record: MemoryRecord; hint: { suggestedScope: MemoryScope; reason: string } } => Boolean(x.hint))
+    .map((x) => ({ record: x.record, suggestedScope: x.hint.suggestedScope, reason: x.hint.reason }));
+}
+
+function duplicateSubjectHints(records: MemoryRecord[], limit = 8) {
+  return [...records.reduce((m, r) => m.set(`${r.scope}:${r.kind}:${r.subject}`, (m.get(`${r.scope}:${r.kind}:${r.subject}`) ?? 0) + 1), new Map<string, number>()).entries()]
+    .filter(([, count]) => count > 1)
+    .slice(0, limit);
+}
+
+function memoryStatsSnapshot(cwd: string) {
   const records = latestRecords(allRecords(cwd));
   const active = activeRecords(records);
-  const stale = records.filter((r) => r.status === "stale");
-  const superseded = records.filter((r) => r.status === "superseded");
-  const done = records.filter((r) => r.status === "done");
-  const duplicateSubjects = [...active.reduce((m, r) => m.set(`${r.scope}:${r.kind}:${r.subject}`, (m.get(`${r.scope}:${r.kind}:${r.subject}`) ?? 0) + 1), new Map<string, number>()).entries()]
-    .filter(([, count]) => count > 1)
-    .slice(0, 8);
-  const repo = repoMapStaleness(cwd);
-  return { total: records.length, active: active.length, stale: stale.length, superseded: superseded.length, done: done.length, duplicateSubjects, repoMap: repo };
+  const byScope: Record<MemoryScope, number> = { user: 0, project: 0 };
+  const activeByScope: Record<MemoryScope, number> = { user: 0, project: 0 };
+  const byStatus = emptyStatusCounts();
+  const activeByKind = emptyKindCounts();
+  const byKind = emptyKindCounts();
+  const statusByScope: Record<MemoryScope, Record<MemoryStatus, number>> = { user: emptyStatusCounts(), project: emptyStatusCounts() };
+  for (const r of records) {
+    const status = recordStatus(r);
+    byScope[r.scope]++;
+    byStatus[status]++;
+    statusByScope[r.scope][status]++;
+    byKind[r.kind]++;
+    if (status === "active") {
+      activeByScope[r.scope]++;
+      activeByKind[r.kind]++;
+    }
+  }
+  const staleCandidateKeys = new Set(memoryCurationCandidates(cwd, hybridMemoryConfig(cwd).pruneActiveSessionRecaps).map((candidate) => recordKey(candidate.record)));
+  const scopeHints = scopeMismatchHints(cwd, active);
+  return {
+    total: records.length,
+    active: active.length,
+    inactive: records.length - active.length,
+    byScope,
+    activeByScope,
+    byStatus,
+    byKind,
+    activeByKind,
+    statusByScope,
+    pinnedActive: active.filter((r) => r.pinned).length,
+    pinnedInactive: records.filter((r) => r.pinned && !isActiveRecord(r)).length,
+    duplicateSubjects: duplicateSubjectHints(active),
+    staleCandidateCount: staleCandidateKeys.size,
+    scopeMismatchCount: scopeHints.length,
+    repoMap: repoMapStaleness(cwd),
+  };
+}
+
+function memoryHealth(cwd: string) {
+  const stats = memoryStatsSnapshot(cwd);
+  return {
+    total: stats.total,
+    active: stats.active,
+    stale: stats.byStatus.stale,
+    superseded: stats.byStatus.superseded,
+    done: stats.byStatus.done,
+    duplicateSubjects: stats.duplicateSubjects,
+    repoMap: stats.repoMap,
+    stats,
+  };
 }
 
 function regenerateProjectContext(cwd: string, map = readRepoMap(cwd)) {
@@ -1463,6 +1595,159 @@ function staleCodebaseNoteReason(cwd: string, r: MemoryRecord) {
 function staleReasonForMemory(cwd: string, r: MemoryRecord) {
   if (r.pinned) return undefined;
   return noisyAutoPreferenceReason(r) ?? noisySessionRecapReason(r) ?? noisyRecipeReason(r) ?? staleCodebaseNoteReason(cwd, r);
+}
+
+function preferredMemoryKeeper(a: MemoryRecord, b: MemoryRecord) {
+  return Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.salience - a.salience || b.updatedAt.localeCompare(a.updatedAt);
+}
+
+function memoryCurationCandidates(cwd: string, maxActiveSessionRecaps = 12): MemoryDoctorCandidate[] {
+  const active = activeRecords(latestRecords(allRecords(cwd)));
+  const candidates = new Map<string, MemoryDoctorCandidate>();
+  const add = (record: MemoryRecord, reason: string) => {
+    if (record.pinned) return;
+    const key = recordKey(record);
+    if (!candidates.has(key)) candidates.set(key, { record, action: "mark_stale", reason });
+  };
+
+  const bySubject = new Map<string, MemoryRecord[]>();
+  for (const r of active) {
+    const hygieneReason = staleReasonForMemory(cwd, r);
+    if (hygieneReason) add(r, hygieneReason);
+    const key = `${r.scope}:${r.kind}:${r.subject.toLowerCase()}`;
+    const arr = bySubject.get(key) ?? [];
+    arr.push(r);
+    bySubject.set(key, arr);
+  }
+  for (const group of bySubject.values()) {
+    if (group.length < 2) continue;
+    group.sort(preferredMemoryKeeper);
+    for (const r of group.slice(1)) add(r, "duplicate-subject");
+  }
+
+  const recipeGroups = new Map<string, MemoryRecord[]>();
+  const recipeCommandSets = active
+    .filter((x) => x.kind === "recipe")
+    .map((r) => ({ r, commands: recipeCommandFamilyKeys(r.content).sort() }))
+    .filter((x) => x.commands.length);
+  for (const { r, commands } of recipeCommandSets.filter((x) => !x.r.pinned)) {
+    const key = commands.join("; ");
+    const arr = recipeGroups.get(key) ?? [];
+    arr.push(r);
+    recipeGroups.set(key, arr);
+  }
+  for (const group of recipeGroups.values()) {
+    if (group.length < 2) continue;
+    group.sort(preferredMemoryKeeper);
+    for (const r of group.slice(1)) add(r, "duplicate-command-recipe");
+  }
+  for (const current of recipeCommandSets.filter((x) => !x.r.pinned)) {
+    const covered = recipeCommandSets.some((other) => {
+      if (other.r === current.r) return false;
+      if (!other.r.pinned && other.r.updatedAt < current.r.updatedAt) return false;
+      const otherSet = new Set(other.commands);
+      return current.commands.every((cmd) => otherSet.has(cmd)) && other.commands.length >= current.commands.length;
+    });
+    if (covered) add(current.r, "covered-command-recipe");
+  }
+
+  const recapLimit = (scope: MemoryScope) => scope === "project" ? maxActiveSessionRecaps : Math.max(8, maxActiveSessionRecaps);
+  const recapsByScope = new Map<MemoryScope, MemoryRecord[]>();
+  for (const r of active.filter((x) => x.kind === "session_recap" && !x.pinned)) {
+    const arr = recapsByScope.get(r.scope) ?? [];
+    arr.push(r);
+    recapsByScope.set(r.scope, arr);
+  }
+  for (const [scope, recaps] of recapsByScope.entries()) {
+    recaps.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    for (const r of recaps.slice(recapLimit(scope))) add(r, "old-session-recap");
+  }
+
+  return [...candidates.values()].sort((a, b) => a.record.scope.localeCompare(b.record.scope) || a.record.kind.localeCompare(b.record.kind) || a.reason.localeCompare(b.reason));
+}
+
+function memoryDoctorPlan(cwd: string, maxActiveSessionRecaps = hybridMemoryConfig(cwd).pruneActiveSessionRecaps): MemoryDoctorPlan {
+  const active = activeRecords(latestRecords(allRecords(cwd)));
+  return {
+    generatedAt: nowIso(),
+    maxActiveSessionRecaps,
+    before: memoryStatsSnapshot(cwd),
+    candidates: memoryCurationCandidates(cwd, maxActiveSessionRecaps),
+    scopeHints: scopeMismatchHints(cwd, active),
+  };
+}
+
+function applyMemoryDoctorPlan(cwd: string, plan: MemoryDoctorPlan): MemoryDoctorApplyResult {
+  const result: MemoryDoctorApplyResult = { applied: 0, updated: [], skipped: [] };
+  for (const candidate of plan.candidates) {
+    const update = updateRecord(cwd, candidate.record.id, { status: "stale", evidence: { doctorReason: candidate.reason, doctoredAt: nowIso() } }, candidate.record.scope);
+    if (update.updated) {
+      result.applied++;
+      result.updated.push(recordKey(update.updated));
+    } else {
+      result.skipped.push(`${recordKey(candidate.record)} (${candidate.reason})`);
+    }
+  }
+  if (result.applied) regenerateProjectContext(cwd);
+  return result;
+}
+
+function formatScopeStatusLine(label: string, counts: Record<MemoryStatus, number>) {
+  return `${label}: active ${counts.active}, stale ${counts.stale}, superseded ${counts.superseded}, done ${counts.done}`;
+}
+
+function formatMemoryStatsText(stats: MemoryStatsSnapshot, p?: ReturnType<typeof paths>) {
+  const lines = [
+    `Hybrid memory: ${stats.active} active / ${stats.total} total heads`,
+    `${formatScopeStatusLine("user", stats.statusByScope.user)}; ${formatScopeStatusLine("project", stats.statusByScope.project)}`,
+    `inactive: stale ${stats.byStatus.stale}, superseded ${stats.byStatus.superseded}, done ${stats.byStatus.done}; pinned: ${stats.pinnedActive} active${stats.pinnedInactive ? `, ${stats.pinnedInactive} inactive` : ""}`,
+    `hygiene: ${stats.duplicateSubjects.length} duplicate subject group${stats.duplicateSubjects.length === 1 ? "" : "s"}; ${stats.staleCandidateCount} stale/noisy candidate${stats.staleCandidateCount === 1 ? "" : "s"}; ${stats.scopeMismatchCount} scope review hint${stats.scopeMismatchCount === 1 ? "" : "s"}`,
+    `repo map: ${stats.repoMap.stale ? `stale (${stats.repoMap.reason})` : "fresh"}`,
+  ];
+  if (p) lines.push(`user: ${p.user}`, `project: ${p.project}`);
+  return lines.join("\n");
+}
+
+function formatMemoryDoctorReport(input: { plan: MemoryDoctorPlan; applyResult?: MemoryDoctorApplyResult; after?: MemoryStatsSnapshot }) {
+  const { plan, applyResult, after } = input;
+  const lines = [
+    `<!-- Generated by pi-hybrid-memory /hmemory-doctor. Safe cleanup is append-only and deterministic. -->`,
+    `Generated: ${plan.generatedAt}`,
+    `Mode: ${applyResult ? "apply" : "preview"}`,
+    `Safe cleanup candidates: ${plan.candidates.length}`,
+    `Scope review hints: ${plan.scopeHints.length}`,
+    `Max active session recaps: ${plan.maxActiveSessionRecaps}`,
+    "",
+    "## Before",
+    formatMemoryStatsText(plan.before),
+  ];
+  if (after) lines.push("", "## After", formatMemoryStatsText(after));
+  lines.push("", "## Safe cleanup candidates");
+  if (!plan.candidates.length) lines.push("No deterministic stale/noisy/duplicate candidates found.");
+  for (const candidate of plan.candidates) {
+    lines.push(`- mark stale ${recordKey(candidate.record)} [${candidate.record.kind}] “${redactSecrets(compactText(candidate.record.subject, 90))}” — ${candidate.reason}`);
+  }
+  lines.push("", "## Scope review hints");
+  if (!plan.scopeHints.length) lines.push("No obvious user/project scope mismatches found.");
+  for (const hint of plan.scopeHints.slice(0, 40)) {
+    lines.push(`- review ${recordKey(hint.record)} [${hint.record.kind}] → maybe ${hint.suggestedScope}: ${hint.reason}`);
+  }
+  if (plan.scopeHints.length > 40) lines.push(`- … ${plan.scopeHints.length - 40} more scope hints omitted from this report.`);
+  if (applyResult) {
+    lines.push("", "## Apply result", `Applied: ${applyResult.applied}`, `Skipped: ${applyResult.skipped.length}`);
+    if (applyResult.updated.length) lines.push(`Updated: ${applyResult.updated.join(", ")}`);
+    if (applyResult.skipped.length) lines.push("Skipped:", ...applyResult.skipped.map((s) => `- ${s}`));
+  }
+  lines.push("", "---", "No records were deleted. `/hmemory-doctor apply` only appends stale statuses for deterministic hygiene candidates. Use `/hmemory-audit` for model-assisted rewrites, merges, or new clean records.");
+  return lines.join("\n");
+}
+
+function writeMemoryDoctorReport(cwd: string, report: string, mode: "preview" | "apply") {
+  const dir = join(projectMemoryDir(cwd), AUDITS);
+  ensureDir(dir);
+  const file = join(dir, `${nowIso().replace(/[:.]/g, "-")}-hmemory-doctor-${mode}.md`);
+  writeFileSync(file, report.trim() + "\n", "utf8");
+  return file;
 }
 
 function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
@@ -2226,6 +2511,49 @@ function parseMemoryAuditArgs(args: string) {
   return { apply, dryRun, query: !trimmed || /^(?:all|active)$/i.test(trimmed) ? undefined : redactSecrets(trimmed) };
 }
 
+function cleanArgToken(token: string) {
+  return token.replace(/^(["'])(.*)\1$/, "$2");
+}
+
+function parseMemorySearchArgs(args: string): { query: string; options: SearchRecordsOptions } {
+  const tokens = args.match(/(?:"[^"]*"|'[^']*'|\S+)/g)?.map(cleanArgToken) ?? [];
+  const query: string[] = [];
+  const options: SearchRecordsOptions = {};
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    const next = () => tokens[++i];
+    const readValue = (prefix: string) => token.includes("=") ? token.slice(prefix.length + 1) : next();
+    if (token === "--all" || token === "all" || token === "--include-inactive") options.status = "all";
+    else if (token.startsWith("--scope")) {
+      const value = readValue("--scope");
+      if (scopeEnum.includes(value as MemoryScope)) options.scope = value as MemoryScope;
+    } else if (token.startsWith("--kind")) {
+      const value = readValue("--kind");
+      if (kindEnum.includes(value as MemoryKind)) options.kind = value as MemoryKind;
+    } else if (token.startsWith("--status")) {
+      const value = readValue("--status");
+      if (searchStatusEnum.includes(value as SearchStatusFilter)) options.status = value as SearchStatusFilter;
+    } else {
+      query.push(token);
+    }
+  }
+  const text = redactSecrets(query.join(" ").trim());
+  return { query: text || "active pinned", options };
+}
+
+function parseMemoryDoctorArgs(args: string) {
+  const tokens = args.match(/(?:"[^"]*"|'[^']*'|\S+)/g)?.map(cleanArgToken) ?? [];
+  let mode: "preview" | "apply" = "preview";
+  let maxActiveSessionRecaps: number | undefined;
+  for (const token of tokens) {
+    if (/^(?:--?apply|apply)$/i.test(token)) mode = "apply";
+    else if (/^(?:--?preview|preview|--?dry-run)$/i.test(token)) mode = "preview";
+    else if (/^--?max-recaps=/i.test(token)) maxActiveSessionRecaps = boundedNumber(token.split("=")[1], 12, 3, 100);
+    else if (/^\d+$/.test(token)) maxActiveSessionRecaps = boundedNumber(token, 12, 3, 100);
+  }
+  return { mode, maxActiveSessionRecaps };
+}
+
 function modelLabel(model: any) {
   return model?.provider && model?.id ? `${model.provider}/${model.id}` : String(model?.id ?? "selected model");
 }
@@ -2690,9 +3018,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("hmemory", {
     description: "Show hybrid JSONL memory stats",
     handler: async (_args, ctx) => {
-      const p = paths(ctx.cwd);
-      const records = latestRecords(allRecords(ctx.cwd));
-      ctx.ui.notify(`hybrid memory: ${records.length} records\nuser: ${p.user}\nproject: ${p.project}`, "info");
+      ctx.ui.notify(formatMemoryStatsText(memoryStatsSnapshot(ctx.cwd), paths(ctx.cwd)), "info");
     },
   });
 
@@ -2704,10 +3030,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("hmemory-search", {
-    description: "Search hybrid JSONL memory",
+    description: "Search hybrid JSONL memory; flags: --all --scope user|project --kind recipe --status stale",
     handler: async (args, ctx) => {
-      const hits = searchRecords(ctx.cwd, args || "active pinned", 8);
-      ctx.ui.notify(hits.length ? hits.map((h) => `${recordKey(h.record)}: ${redactSecrets(h.record.content)}`).join("\n") : "No hybrid memory hits.", "info");
+      const parsed = parseMemorySearchArgs(args);
+      const hits = searchRecordsWithOptions(ctx.cwd, parsed.query, 8, parsed.options);
+      ctx.ui.notify(hits.length ? hits.map((h) => `${recordKey(h.record)} [${h.record.kind}, ${recordStatus(h.record)}]: ${redactSecrets(displayContent(h.record))}`).join("\n") : "No hybrid memory hits.", "info");
     },
   });
 
@@ -2797,7 +3124,30 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const h = memoryHealth(ctx.cwd);
       const dupes = h.duplicateSubjects.length ? `\nduplicates: ${h.duplicateSubjects.map(([k, n]) => `${k} x${n}`).join("; ")}` : "";
-      ctx.ui.notify(`memory health: ${h.active}/${h.total} active; stale ${h.stale}; done ${h.done}; superseded ${h.superseded}\nrepo map: ${h.repoMap.stale ? `stale (${h.repoMap.reason})` : "fresh"}${dupes}`, "info");
+      ctx.ui.notify(`${formatMemoryStatsText(h.stats)}${dupes}`, "info");
+    },
+  });
+
+  pi.registerCommand("hmemory-doctor", {
+    description: "Preview/apply deterministic memory cleanup and write a curation report: /hmemory-doctor [preview|apply] [maxRecaps]",
+    handler: async (args, ctx) => {
+      const parsed = parseMemoryDoctorArgs(args);
+      const max = parsed.maxActiveSessionRecaps ?? hybridMemoryConfig(ctx.cwd).pruneActiveSessionRecaps;
+      const plan = memoryDoctorPlan(ctx.cwd, max);
+      let applyResult: MemoryDoctorApplyResult | undefined;
+      let after: MemoryStatsSnapshot | undefined;
+      if (parsed.mode === "apply") {
+        applyResult = applyMemoryDoctorPlan(ctx.cwd, plan);
+        after = memoryStatsSnapshot(ctx.cwd);
+        updateProjectState(ctx.cwd, { lastDoctorAppliedAt: nowIso(), lastDoctorApplied: applyResult.applied, lastDoctorSkipped: applyResult.skipped.length });
+        updateMemoryChrome(ctx);
+      }
+      const report = formatMemoryDoctorReport({ plan, applyResult, after });
+      const reportPath = writeMemoryDoctorReport(ctx.cwd, report, parsed.mode);
+      updateProjectState(ctx.cwd, { lastDoctorAt: nowIso(), lastDoctorPath: reportPath, lastDoctorCandidates: plan.candidates.length, lastDoctorScopeHints: plan.scopeHints.length });
+      const noun = plan.candidates.length === 1 ? "candidate" : "candidates";
+      const scopeNoun = plan.scopeHints.length === 1 ? "hint" : "hints";
+      ctx.ui.notify(`memory doctor ${parsed.mode}: ${plan.candidates.length} safe cleanup ${noun}; ${plan.scopeHints.length} scope ${scopeNoun}${applyResult ? `; applied ${applyResult.applied}` : ""}; report ${reportPath}`, parsed.mode === "apply" && applyResult?.applied ? "success" : "info");
     },
   });
 
@@ -3075,17 +3425,29 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       query: Type.String(),
       limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })),
+      scope: Type.Optional(StringEnum(scopeEnum)),
+      kind: Type.Optional(StringEnum(kindEnum)),
+      status: Type.Optional(StringEnum(searchStatusEnum)),
+      includeInactive: Type.Optional(Type.Boolean()),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const hits = searchRecords(ctx.cwd, params.query, params.limit ?? 12);
+      const options: SearchRecordsOptions = {
+        scope: params.scope as MemoryScope | undefined,
+        kind: params.kind as MemoryKind | undefined,
+        status: params.status as SearchStatusFilter | undefined,
+        includeInactive: params.includeInactive,
+      };
+      const hits = searchRecordsWithOptions(ctx.cwd, params.query, params.limit ?? 12, options);
       return {
-        content: [{ type: "text", text: hits.length ? hits.map((h) => `${recordKey(h.record)} [${h.record.kind}, score ${h.score}]: ${redactSecrets(h.record.content)}`).join("\n") : "No hybrid memory hits." }],
-        details: { hits },
+        content: [{ type: "text", text: hits.length ? hits.map((h) => `${recordKey(h.record)} [${h.record.kind}, ${recordStatus(h.record)}, score ${h.score}]: ${redactSecrets(displayContent(h.record))}`).join("\n") : "No hybrid memory hits." }],
+        details: { hits, options },
       };
     },
     renderCall(args, theme) {
       const limit = args.limit ? memoryTheme(theme, "dim", `limit ${args.limit}`) : "";
-      return memoryToolCall(theme, "🔎 search", `${memoryTheme(theme, "accent", `"${memoryToolPreview(args.query, 80)}"`)} ${limit}`.trim());
+      const filters = [args.scope, args.kind, args.status && args.status !== "active" ? args.status : undefined, args.includeInactive ? "all" : undefined].filter(Boolean).join("/");
+      const filterText = filters ? memoryTheme(theme, "dim", ` ${filters}`) : "";
+      return memoryToolCall(theme, "🔎 search", `${memoryTheme(theme, "accent", `"${memoryToolPreview(args.query, 80)}"`)}${filterText} ${limit}`.trim());
     },
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🔎 searching memory…"));
@@ -3260,29 +3622,79 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
       const p = paths(ctx.cwd);
-      const records = latestRecords(allRecords(ctx.cwd));
-      const byKind = Object.fromEntries(kindEnum.map((k) => [k, records.filter((r) => r.kind === k).length]));
+      const stats = memoryStatsSnapshot(ctx.cwd);
       const config = publicHybridMemoryConfig(hybridMemoryConfig(ctx.cwd));
-      return { content: [{ type: "text", text: `Hybrid memory: ${records.length} records\nuser: ${p.user}\nproject: ${p.project}` }], details: { paths: p, total: records.length, byKind, config } };
+      return { content: [{ type: "text", text: formatMemoryStatsText(stats, p) }], details: { paths: p, ...stats, config } };
     },
     renderCall(args, theme) {
       return memoryToolCall(theme, "📊 stats", memoryTheme(theme, "muted", "memory health"));
     },
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "📊 reading memory stats…"));
-      const details = result.details as { paths?: ReturnType<typeof paths>; total?: number; byKind?: Record<string, number>; config?: Record<string, unknown> } | undefined;
+      const details = result.details as (MemoryStatsSnapshot & { paths?: ReturnType<typeof paths>; config?: Record<string, unknown> }) | undefined;
       if (!details) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
-      const total = details.total ?? 0;
       const topKinds = kindEnum
-        .map((k) => [k, details.byKind?.[k] ?? 0] as const)
+        .map((k) => [k, details.activeByKind?.[k] ?? 0] as const)
         .filter(([, n]) => n > 0)
         .map(([k, n]) => `${memoryKindIcon(k)} ${n}`)
         .join("  ");
-      let text = `${memoryTheme(theme, "success", "📊 hybrid memory")} ${memoryTheme(theme, "accent", `${total} records`)}${topKinds ? ` ${memoryTheme(theme, "dim", topKinds)}` : ""}`;
-      if (expanded && details.paths) {
-        text += `\n${memoryTheme(theme, "dim", "user")} ${details.paths.user}`;
-        text += `\n${memoryTheme(theme, "dim", "project")} ${details.paths.project}`;
+      let text = `${memoryTheme(theme, "success", "📊 hybrid memory")} ${memoryTheme(theme, "accent", `${details.active ?? 0} active`)} ${memoryTheme(theme, "dim", `/ ${details.total ?? 0} total`)}`;
+      if (topKinds) text += ` ${memoryTheme(theme, "dim", topKinds)}`;
+      if (expanded) {
+        text += `\n${memoryTheme(theme, "dim", "inactive")} stale ${details.byStatus?.stale ?? 0} • superseded ${details.byStatus?.superseded ?? 0} • done ${details.byStatus?.done ?? 0}`;
+        text += `\n${memoryTheme(theme, "dim", "hygiene ")} duplicates ${details.duplicateSubjects?.length ?? 0} • stale candidates ${details.staleCandidateCount ?? 0} • scope hints ${details.scopeMismatchCount ?? 0}`;
+        if (details.paths) {
+          text += `\n${memoryTheme(theme, "dim", "user")} ${details.paths.user}`;
+          text += `\n${memoryTheme(theme, "dim", "project")} ${details.paths.project}`;
+        }
         if (details.config?.maxInjectChars) text += `\n${memoryTheme(theme, "dim", `inject cap ${details.config.maxInjectChars}`)}`;
+      }
+      return memoryToolText(text);
+    },
+  });
+
+  pi.registerTool({
+    name: "hybrid_memory_doctor",
+    label: "Hybrid Doctor",
+    description: "Preview or apply deterministic hybrid-memory cleanup: active/inactive counts, duplicate/noisy stale candidates, scope hints, and a report file.",
+    parameters: Type.Object({
+      mode: Type.Optional(StringEnum(doctorModeEnum)),
+      maxActiveRecaps: Type.Optional(Type.Number({ minimum: 3, maximum: 100 })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      return withHybridMemoryMutation(ctx.cwd, async () => {
+        const mode = (params.mode ?? "preview") as "preview" | "apply";
+        const max = boundedNumber(params.maxActiveRecaps, hybridMemoryConfig(ctx.cwd).pruneActiveSessionRecaps, 3, 100);
+        const plan = memoryDoctorPlan(ctx.cwd, max);
+        let applyResult: MemoryDoctorApplyResult | undefined;
+        let after: MemoryStatsSnapshot | undefined;
+        if (mode === "apply") {
+          applyResult = applyMemoryDoctorPlan(ctx.cwd, plan);
+          after = memoryStatsSnapshot(ctx.cwd);
+          updateProjectState(ctx.cwd, { lastDoctorAppliedAt: nowIso(), lastDoctorApplied: applyResult.applied, lastDoctorSkipped: applyResult.skipped.length });
+        }
+        const report = formatMemoryDoctorReport({ plan, applyResult, after });
+        const reportPath = writeMemoryDoctorReport(ctx.cwd, report, mode);
+        updateProjectState(ctx.cwd, { lastToolDoctorAt: nowIso(), lastToolDoctorPath: reportPath, lastToolDoctorCandidates: plan.candidates.length, lastToolDoctorScopeHints: plan.scopeHints.length });
+        updateMemoryChrome(ctx);
+        const applied = applyResult ? ` Applied ${applyResult.applied}.` : "";
+        return { content: [{ type: "text", text: `Memory doctor ${mode}: ${plan.candidates.length} safe cleanup candidates; ${plan.scopeHints.length} scope hints.${applied} Report: ${reportPath}` }], details: { plan, applyResult, after, reportPath, mode } };
+      });
+    },
+    renderCall(args, theme) {
+      const mode = String(args.mode ?? "preview");
+      return memoryToolCall(theme, "🩺 doctor", `${memoryTheme(theme, mode === "apply" ? "warning" : "muted", mode)}${args.maxActiveRecaps ? memoryTheme(theme, "dim", ` max ${args.maxActiveRecaps}`) : ""}`);
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🩺 checking memory health…"));
+      const details = result.details as { plan?: MemoryDoctorPlan; applyResult?: MemoryDoctorApplyResult; reportPath?: string; mode?: string } | undefined;
+      if (!details?.plan) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
+      let text = `${memoryTheme(theme, "success", "🩺 memory doctor")} ${memoryTheme(theme, "accent", `${details.plan.candidates.length} candidate${details.plan.candidates.length === 1 ? "" : "s"}`)} ${memoryTheme(theme, "dim", `• ${details.plan.scopeHints.length} scope hint${details.plan.scopeHints.length === 1 ? "" : "s"}`)}`;
+      if (details.applyResult) text += ` ${memoryTheme(theme, details.applyResult.applied ? "success" : "muted", `• applied ${details.applyResult.applied}`)}`;
+      if (expanded) {
+        for (const candidate of details.plan.candidates.slice(0, 6)) text += `\n${memoryTheme(theme, "dim", "stale")} ${memoryTheme(theme, "accent", recordKey(candidate.record))} ${memoryTheme(theme, "dim", candidate.reason)}`;
+        if (details.plan.candidates.length > 6) text += `\n${memoryTheme(theme, "dim", `… ${details.plan.candidates.length - 6} more`)}`;
+        if (details.reportPath) text += `\n${memoryTheme(theme, "dim", "report")} ${details.reportPath}`;
       }
       return memoryToolText(text);
     },
