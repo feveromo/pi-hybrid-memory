@@ -35,8 +35,9 @@ It provides a small, inspectable memory layer for Pi agents:
 ## Tools
 
 - `hybrid_memory_remember` — add a typed user/project memory record.
-- `hybrid_memory_search` — search memory records.
+- `hybrid_memory_search` — search memory records, with optional scope/kind/status filters.
 - `hybrid_memory_forget` — mark records `done`, `stale`, or `superseded`.
+- `hybrid_memory_doctor` — preview/apply deterministic cleanup candidates and write a curation report.
 - `hybrid_memory_stats` — show memory counts and paths.
 - `hybrid_memory_import_sessions` — import concise recaps/preferences from Pi session JSONL files.
 - `hybrid_memory_refresh_context` — rebuild repo map and optionally import recent session recaps.
@@ -47,11 +48,12 @@ It provides a small, inspectable memory layer for Pi agents:
 
 - `/hmemory` — show memory stats.
 - `/hmemory-config` — show active hybrid-memory tuning from Pi settings.
-- `/hmemory-search <query>` — search memory.
+- `/hmemory-search [--all] [--scope user|project] [--kind recipe] [--status stale] <query>` — search memory.
 - `/hmemory-forget <id> [status]` — mark a memory stale/done/superseded; use `user:<id>` or `project:<id>` if ambiguous.
 - `/hmemory-repomap` — rebuild repo map for the current project.
 - `/hmemory-repo <query>` — search repo map files/symbols/imports/commands/tools/hooks.
-- `/hmemory-health` — show memory health, duplicate hints, and repo-map staleness.
+- `/hmemory-health` — show memory health, active/inactive counts, duplicate hints, and repo-map staleness.
+- `/hmemory-doctor [preview|apply] [maxRecaps]` — write a curation report with safe cleanup candidates, scope hints, and optional append-only stale-status application.
 - `/hmemory-show <id>` — show one memory record.
 - `/hmemory-review` — review/pin/stale/done active memories in a TUI overlay.
 - `/hmemory-audit [preview|apply] [focus]` — use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes.

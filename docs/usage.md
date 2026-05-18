@@ -9,21 +9,23 @@
 ```text
 /hmemory
 /hmemory-health
+/hmemory-doctor preview
 /hmemory-dashboard
 /hmemory-config
 ```
 
-Use `/hmemory-dashboard full` when you want command/tool/hook details from the repo map. Use `/hmemory-config` to inspect the active tuning loaded from Pi settings.
+Use `/hmemory-dashboard full` when you want command/tool/hook details from the repo map. Use `/hmemory-config` to inspect the active tuning loaded from Pi settings. `/hmemory` and `/hmemory-health` show active vs inactive counts so append-only history is not confused with useful current memory.
 
 ### Search memory
 
 ```text
 /hmemory-search architecture
-/hmemory-search user preference
+/hmemory-search --scope user --kind preference concise answers
+/hmemory-search --all --status superseded old prompt
 /hmemory-show <id>
 ```
 
-If an id exists in both user and project scope, use a scoped id such as `user:<id>` or `project:<id>`.
+If an id exists in both user and project scope, use a scoped id such as `user:<id>` or `project:<id>`. Search defaults to active memories; add `--all` or `--status stale|done|superseded` when auditing old append-only history.
 
 ### Add active work
 
@@ -53,6 +55,25 @@ Pinned active records are favored during retrieval and shown before lower-salien
 ```
 
 Records are append-only: status changes append a new latest version rather than rewriting history.
+
+### Run deterministic curation
+
+```text
+/hmemory-doctor preview
+/hmemory-doctor apply
+/hmemory-doctor apply 8
+```
+
+`/hmemory-doctor` is the local, no-model curation pass. It writes a report under `<project>/.pi/hybrid-memory/audits/` with:
+
+- active/inactive counts by scope/status
+- duplicate subject groups
+- noisy imported preference/recipe/session candidates
+- old session recap candidates
+- user/project scope review hints
+- before/after counts when applying
+
+Preview mode never changes records. Apply mode only appends `stale` statuses for deterministic hygiene candidates; it does not rewrite, merge, move scopes, or delete anything. Use `/hmemory-audit` when you want the selected Pi model to propose rewrites, merges, new clean records, or pinned changes.
 
 ### Review records in the TUI
 

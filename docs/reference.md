@@ -8,7 +8,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | --- | --- |
 | `/hmemory` | Show memory stats and storage roots. |
 | `/hmemory-config` | Show active hybrid-memory tuning from Pi settings. |
-| `/hmemory-search <query>` | Search memory records. |
+| `/hmemory-search [--all] [--scope user\|project] [--kind recipe] [--status stale] <query>` | Search memory records, defaulting to active records unless a status/all flag is provided. |
 | `/hmemory-show <id>` | Show one memory record. |
 | `/hmemory-forget <id> [status]` | Mark a memory `stale`, `done`, or `superseded`. |
 | `/hmemory-done <id>` | Mark a memory/work item done. |
@@ -20,7 +20,8 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `/hmemory-prune [maxActiveRecaps]` | Prune duplicate/old session-recapped memories and maybe create a rollup. |
 | `/hmemory-repomap` | Rebuild the repo map for the current project. |
 | `/hmemory-repo <query>` | Search repo-map files, symbols, imports, commands, tools, and hooks. |
-| `/hmemory-health` | Show memory health, duplicate hints, and repo-map staleness. |
+| `/hmemory-health` | Show memory health, active/inactive counts, duplicate hints, cleanup candidate counts, scope hints, and repo-map staleness. |
+| `/hmemory-doctor [preview\|apply] [maxRecaps]` | Write a deterministic curation report and optionally append stale statuses for safe cleanup candidates. |
 | `/hmemory-dashboard [full]` | Open a styled memory/repo dashboard overlay. |
 | `/hmemory-widget [off]` | Show or hide a compact memory widget above the editor. |
 | `/hmemory-context` | Regenerate/show the compact working context file. |
@@ -34,12 +35,13 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | Tool | Purpose |
 | --- | --- |
 | `hybrid_memory_remember` | Store a typed user/project memory record. |
-| `hybrid_memory_search` | Search local memory records by lexical/path/symbol relevance. |
+| `hybrid_memory_search` | Search local memory records by lexical/path/symbol relevance, with optional scope/kind/status filters. |
 | `hybrid_memory_forget` | Mark a memory record done, stale, or superseded. |
 | `hybrid_memory_import_sessions` | Import compact memory from Pi session JSONL files. |
 | `hybrid_memory_refresh_context` | Rebuild repo map and optionally import recent session recaps. |
 | `hybrid_memory_bootstrap_project` | Rebuild repo map, import prior project sessions, prune, and roll up. |
-| `hybrid_memory_stats` | Show memory counts and paths. |
+| `hybrid_memory_stats` | Show active/inactive counts by scope/status/kind, hygiene hints, and paths. |
+| `hybrid_memory_doctor` | Preview/apply deterministic cleanup candidates and write a curation report. |
 | `hybrid_memory_build_repomap` | Build or refresh the repo map. |
 
 ## Record kinds
