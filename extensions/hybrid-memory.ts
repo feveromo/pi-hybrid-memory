@@ -36,6 +36,7 @@ const DEFAULT_PRUNE_ACTIVE_SESSION_RECAPS = 12;
 const DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS = 8;
 const RECIPE_DISPLAY_COMMAND_LIMIT = 6;
 const SESSION_ROOT = join(homedir(), ".pi", "agent", "sessions");
+const SESSION_IMPORT_MAX_BYTES = 1_500_000;
 const SECRET_REPLACEMENT = "[REDACTED]";
 const REPO_NOISE_TOP_LEVEL = new Set([
   ".android", ".cache", ".cargo", ".config", ".dotnet", ".gradle", ".java", ".local", ".npm", ".nv", ".openclaw", ".pytest_cache", ".rustup", ".thinkorswim", ".vscode", ".vscode-shared", ".warp",
@@ -133,6 +134,18 @@ const repoStalenessCache = new Map<string, RepoStalenessCacheEntry>();
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isMemoryKind(value: unknown): value is MemoryKind {
+  return kindEnum.includes(value as MemoryKind);
+}
+
+function isMemoryScope(value: unknown): value is MemoryScope {
+  return scopeEnum.includes(value as MemoryScope);
+}
+
+function isMemoryStatus(value: unknown): value is MemoryStatus {
+  return statusEnum.includes(value as MemoryStatus);
 }
 
 function clampSetting(value: unknown, fallback: number, min: number, max: number) {
@@ -404,6 +417,39 @@ function sanitizeRecordForStorage(r: MemoryRecord): MemoryRecord {
   };
 }
 
+function normalizeMemoryRecord(value: unknown): MemoryRecord | undefined {
+  if (!isPlainObject(value)) return undefined;
+  if (value.schemaVersion !== SCHEMA_VERSION || typeof value.id !== "string" || !value.id.trim()) return undefined;
+  if (!isMemoryScope(value.scope) || !isMemoryKind(value.kind)) return undefined;
+  const content = typeof value.content === "string" ? value.content.trim() : "";
+  if (!content) return undefined;
+  const subject = typeof value.subject === "string" && value.subject.trim() ? value.subject.trim() : value.kind;
+  const status = value.status === undefined ? "active" : isMemoryStatus(value.status) ? value.status : "active";
+  const salience = Math.max(1, Math.min(5, Math.round(typeof value.salience === "number" ? value.salience : 3))) as 1 | 2 | 3 | 4 | 5;
+  const createdAt = typeof value.createdAt === "string" && value.createdAt ? value.createdAt : nowIso();
+  const updatedAt = typeof value.updatedAt === "string" && value.updatedAt ? value.updatedAt : createdAt;
+  return sanitizeRecordForStorage({
+    id: value.id,
+    schemaVersion: 1,
+    scope: value.scope,
+    kind: value.kind,
+    subject,
+    content,
+    tags: Array.isArray(value.tags) ? value.tags.filter((tag): tag is string => typeof tag === "string") : [],
+    filePaths: Array.isArray(value.filePaths) ? value.filePaths.filter((file): file is string => typeof file === "string") : undefined,
+    symbols: Array.isArray(value.symbols) ? value.symbols.filter((symbol): symbol is string => typeof symbol === "string") : undefined,
+    status,
+    salience,
+    pinned: typeof value.pinned === "boolean" ? value.pinned : undefined,
+    evidence: isPlainObject(value.evidence) ? value.evidence : undefined,
+    supersedes: Array.isArray(value.supersedes) ? value.supersedes.filter((id): id is string => typeof id === "string") : undefined,
+    createdAt,
+    updatedAt,
+    lastUsedAt: typeof value.lastUsedAt === "string" ? value.lastUsedAt : undefined,
+    expiresAt: typeof value.expiresAt === "string" ? value.expiresAt : undefined,
+  });
+}
+
 function findProjectRoot(cwd: string): string {
   const start = resolve(cwd);
   let cur = start;
@@ -458,8 +504,8 @@ function readRecordsFile(file: string): MemoryRecord[] {
   const lines = readFileSync(file, "utf8").split(/\n+/).filter(Boolean);
   for (const line of lines) {
     try {
-      const r = JSON.parse(line) as MemoryRecord;
-      if (r && r.schemaVersion === SCHEMA_VERSION && r.id && r.content) out.push(r);
+      const r = normalizeMemoryRecord(JSON.parse(line));
+      if (r) out.push(r);
     } catch {
       // Keep append-only files resilient to manual edits.
     }
@@ -588,10 +634,28 @@ function appendRecord(cwd: string, r: MemoryRecord) {
   return rec;
 }
 
+function recordMeaningfulSnapshot(r: MemoryRecord) {
+  const rec = sanitizeRecordForStorage(r);
+  return JSON.stringify({
+    scope: rec.scope,
+    kind: rec.kind,
+    subject: rec.subject,
+    content: rec.content,
+    tags: rec.tags ?? [],
+    filePaths: rec.filePaths ?? [],
+    symbols: rec.symbols ?? [],
+    status: recordStatus(rec),
+    salience: rec.salience,
+    pinned: Boolean(rec.pinned),
+    supersedes: rec.supersedes ?? [],
+    expiresAt: rec.expiresAt,
+  });
+}
+
 function appendRecordIfChanged(cwd: string, r: MemoryRecord) {
   const rec = sanitizeRecordForStorage(r);
   const existing = latestRecords(allRecords(cwd)).find((x) => recordKey(x) === recordKey(rec));
-  if (existing && existing.content === rec.content && existing.status === rec.status && existing.pinned === rec.pinned) return false;
+  if (existing && recordMeaningfulSnapshot(existing) === recordMeaningfulSnapshot(rec)) return false;
   appendRecord(cwd, rec);
   return true;
 }
@@ -1155,6 +1219,7 @@ function autoCapturePromptMemory(cwd: string, prompt: string) {
 function autoImportCurrentSession(cwd: string, sessionFile?: string) {
   if (!sessionFile || !existsSync(sessionFile)) return { scanned: 0, extracted: 0, written: 0, sessionFiles: [] as string[] };
   try {
+    if (statSync(sessionFile).size > SESSION_IMPORT_MAX_BYTES) return { scanned: 0, extracted: 0, written: 0, sessionFiles: [sessionFile] };
     const result = importSessions(cwd, [sessionFile]);
     pruneMemory(cwd, hybridMemoryConfig(cwd).autoPruneActiveSessionRecaps);
     return result;
@@ -1883,7 +1948,7 @@ function cheapStartupRefresh(cwd: string, currentSession?: string) {
   }
 
   const files = [...new Set([...(currentSession ? [currentSession] : []), ...listProjectSessionFilesCheap(cwd, 2)])]
-    .filter((f) => existsSync(f) && statSync(f).size <= 1_500_000);
+    .filter((f) => existsSync(f) && statSync(f).size <= SESSION_IMPORT_MAX_BYTES);
   const sessions = importSessions(cwd, files);
   const prune = pruneMemory(cwd, config.autoPruneActiveSessionRecaps);
   updateProjectState(cwd, {
@@ -2325,7 +2390,7 @@ function buildInjection(cwd: string, prompt: string) {
     lines.push("");
   }
   const repoMap = readRepoMap(cwd);
-  const stale = repoMapStaleness(cwd, repoMap);
+  const stale = repoMapStalenessCached(cwd);
   if (stale.stale && repoMap) {
     any = true;
     lines.push("## Repo Map Status", `- stale: ${stale.reason}; run /hmemory-repomap or hybrid_memory_build_repomap after code changes.`, "");
@@ -2689,6 +2754,11 @@ function asStatus(value: unknown): MemoryStatus | undefined {
   return statusEnum.includes(value as MemoryStatus) ? value as MemoryStatus : undefined;
 }
 
+function asInactiveStatus(value: unknown): Exclude<MemoryStatus, "active"> | undefined {
+  const status = asStatus(value);
+  return status && status !== "active" ? status : undefined;
+}
+
 function asSalience(value: unknown, fallback = 3): 1 | 2 | 3 | 4 | 5 {
   return Math.max(1, Math.min(5, Math.round(typeof value === "number" ? value : fallback))) as 1 | 2 | 3 | 4 | 5;
 }
@@ -2777,7 +2847,7 @@ function applyMemoryAuditPlan(cwd: string, plan: MemoryAuditPlan): MemoryAuditAp
   for (const action of plan.actions) {
     const type = String(action.type ?? "");
     if (type === "set_status") {
-      const status = asStatus(action.status) ?? "stale";
+      const status = asInactiveStatus(action.status) ?? "stale";
       const scope = asScope(action.scope);
       for (const id of asStringArray(action.ids ?? action.id, 20)) {
         applyPatchAction(cwd, id, { status, evidence: auditEvidence(action, type) }, scope, result);
@@ -2859,7 +2929,7 @@ function applyMemoryAuditPlan(cwd: string, plan: MemoryAuditPlan): MemoryAuditAp
         result.applied++;
         result.created.push(recordKey(rec));
       }
-      const oldStatus = asStatus(action.markOldStatus) ?? "superseded";
+      const oldStatus = asInactiveStatus(action.markOldStatus) ?? "superseded";
       for (const id of ids) {
         applyPatchAction(cwd, id, { status: oldStatus, evidence: { ...auditEvidence(action, type), supersededBy: recordKey(rec) } }, undefined, result);
       }
