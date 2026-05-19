@@ -35,6 +35,9 @@ assert.match(source, /function isActiveRecord/, 'memory visibility should share 
 assert.match(source, /isActiveRecord\(x\.record\) && x\.score > 0 && shouldIncludeSearchHit\(cwd, x\.record, query\)/, 'pinned records should still need scoped relevance before search/injection');
 assert.match(source, /function readFirstJsonlObject/, 'project session filtering should read only the first JSONL object');
 assert.doesNotMatch(source, /readJsonlObjects\(file\)\[0\]/, 'project session filtering should not parse whole session files');
+assert.match(source, /function normalizeMemoryRecord/, 'manual JSONL records should be normalized before stats/search use them');
+assert.match(source, /function recordMeaningfulSnapshot/, 'stable imports should append a new head when meaningful metadata changes');
+assert.match(source, /SESSION_IMPORT_MAX_BYTES/, 'current-session auto-import should share the bounded session size guard');
 assert.match(source, /repoMapStalenessCached\(ctx\.cwd\)/, 'status chrome should use cached repo-map staleness');
 assert.match(source, /const active = `\$\{ctx\.ui\.theme\.fg\("success", String\(counts\.active\)\)\} \$\{ctx\.ui\.theme\.fg\("dim", "active"\)\}`;/, 'status chrome should spell out active count instead of cryptic abbreviations');
 assert.match(source, /const scopes = \[user, project\]\.filter\(Boolean\)\.join\(" • "\);/, 'status chrome should omit zero-count scope segments cleanly');
@@ -86,6 +89,7 @@ assert.match(source, /const visualAudit = await ctx\.ui\.custom<MemoryAuditResul
 assert.match(source, /if \(visualAudit === null\) return ctx\.ui\.notify\("memory audit cancelled", "info"\);/, 'memory audit should treat null as explicit user cancel');
 assert.match(source, /if \(!audit\) \{\n          audit = await generateMemoryAudit/, 'memory audit should fall back when custom UI is unavailable in non-TUI modes');
 assert.doesNotMatch(source.match(/async function generateMemoryAudit[\s\S]*?\n}/)?.[0] ?? '', /temperature:/, 'memory audit should not pass temperature because Codex models reject it');
+assert.match(source, /function asInactiveStatus/, 'memory audit set_status and merge source statuses should stay inactive-only');
 assert.match(source, /const fileText = files\.length \? files\.join\("  "\) : warp\.dim\("—"\);/, 'memory review should reserve the files row to keep overlay height stable');
 assert.match(source, /for \(let i = 0; i < REVIEW_DETAIL_ROWS; i\+\+\) lines\.push\(row\(detailRows\[i\] \?\? ""\)\);/, 'memory review should render a fixed-size details footer');
 assert.match(source, /function memoryToolCall/, 'hybrid memory tools should share polished call rendering helpers');

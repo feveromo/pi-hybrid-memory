@@ -30,8 +30,10 @@ npm run validate
 `npm run validate` runs:
 
 ```bash
-npm test && npm run test:fixture && npm run smoke:load
+npm test && npm run smoke:load
 ```
+
+(`npm test` already includes the fixture test.)
 
 `smoke:load` asks Pi to load this package and run `/hmemory-health` without a normal session.
 

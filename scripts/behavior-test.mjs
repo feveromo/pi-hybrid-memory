@@ -297,6 +297,58 @@ function makeProject(name) {
   assert.equal(afterSecond, afterFirst, 'second session import should not append JSONL duplicates');
 }
 
+// Re-importing a stable session should append when meaningful metadata changes.
+{
+  const cwd = makeProject('session-meaningful-update');
+  const h = makeHarness(cwd);
+  const sessionFile = join(tempRoot, 'session-meaningful-update.jsonl');
+  const baseLines = [
+    { type: 'session', id: 'meaningful-update-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
+    { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'please review the meaningful update path' }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'read', arguments: { path: 'src/old.ts' } }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'Done and validated.' }] } },
+  ];
+  writeFileSync(sessionFile, baseLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf8');
+  const first = await h.tool('hybrid_memory_import_sessions', { sessionPath: sessionFile });
+  assert(first.details.written > 0, 'first stable session import should write records');
+
+  const updatedLines = [...baseLines];
+  updatedLines.splice(3, 0, { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'read', arguments: { path: 'src/new.ts' } }] } });
+  writeFileSync(sessionFile, updatedLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf8');
+  const second = await h.tool('hybrid_memory_import_sessions', { sessionPath: sessionFile });
+  const recapHeads = readRecords(cwd, 'project').filter((r) => r.kind === 'session_recap' && r.subject === 'session meaningful-update-session');
+  assert.equal(second.details.written, 1, 'changed session file paths should append a refreshed record head');
+  assert(recapHeads.at(-1).filePaths.includes('src/new.ts'), 'refreshed session recap should retain updated file path metadata');
+}
+
+// Hand-edited JSONL records should be normalized before stats/search use them.
+{
+  const cwd = makeProject('manual-jsonl-normalization');
+  const dir = projectMemoryDir(cwd);
+  mkdirSync(dir, { recursive: true });
+  const ts = new Date().toISOString();
+  writeFileSync(join(dir, 'records.jsonl'), JSON.stringify({
+    id: 'manual-invalid-status',
+    schemaVersion: 1,
+    scope: 'project',
+    kind: 'decision',
+    subject: 'manual bad status',
+    content: 'Manual bad status memory should still be searchable',
+    tags: 'not-array',
+    status: 'weird',
+    salience: 99,
+    createdAt: ts,
+    updatedAt: ts,
+  }) + '\n', 'utf8');
+  const h = makeHarness(cwd);
+  const stats = await h.tool('hybrid_memory_stats');
+  assert.equal(stats.details.statusByScope.project.active, 1, 'invalid status should be coerced to active instead of poisoning project counts');
+  assert(stats.details.activeByKind.decision >= 1, 'valid kind should remain counted after normalization');
+  const search = await h.tool('hybrid_memory_search', { query: 'manual bad status searchable', limit: 5 });
+  assert.equal(search.details.hits.length, 1, 'normalized manual record should be searchable');
+  assert.equal(search.details.hits[0].record.salience, 5, 'salience should be clamped to the record max');
+}
+
 // Repo-map staleness should detect files added after map generation.
 {
   const cwd = makeProject('repo-staleness');
