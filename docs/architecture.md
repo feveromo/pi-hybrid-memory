@@ -1,6 +1,6 @@
 # Architecture
 
-`pi-hybrid-memory` is intentionally small and Pi-native. It avoids a vector database, graph database, daemon, or hosted service by default.
+`omp-hybrid-memory` is intentionally small and OMP-native. It avoids a vector database, graph database, daemon, or hosted service by default.
 
 ## Design goals
 
@@ -17,8 +17,8 @@
 There are two scopes:
 
 ```text
-~/.pi/agent/memory/          # user scope
-<project>/.pi/hybrid-memory/ # project scope
+~/.omp/agent/memory/          # user scope
+<project>/.omp/hybrid-memory/ # project scope
 ```
 
 Each scope stores append-only `records.jsonl` plus generated summaries/state. Project scope also stores active work, a repo map, and a compact working context.
@@ -39,7 +39,7 @@ Status updates append a newer version of the same `scope:id`. Retrieval uses the
 
 ## Project root detection
 
-The project root is found by walking upward from the current working directory and stopping at a directory with `.git`, `package.json`, or Pi project markers. Project memory is stored under that root.
+The project root is found by walking upward from the current working directory and stopping at a directory with `.git`, `package.json`, or OMP project markers. Project memory is stored under that root.
 
 ## Retrieval and injection
 
@@ -51,9 +51,9 @@ Before an agent starts, the extension:
 4. Groups results into sections such as user preferences, project decisions, recipes, session recaps, and codebase notes.
 5. Lightly polishes the display: command recipes are normalized/deduped, session recaps render as concise outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, session recap file suffixes prefer project-local paths over package/docs paths, global technical notes need distinctive prompt/path matches, and truncation prefers word boundaries.
 6. Adds relevant repo-map matches when available.
-7. Injects a capped `<hybrid_memory>` block into the system prompt. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
+7. Injects a capped `<hybrid_memory>` block into the system prompt. The cap and per-section limits can be tuned with the local OMP `hybridMemory` settings object.
 
-Mutating hybrid-memory tools use Pi's file mutation queue so parallel tool calls serialize JSONL appends and regenerated summaries/context.
+Mutating hybrid-memory tools use the extension's in-process file mutation queue so parallel tool calls serialize JSONL appends and regenerated summaries/context.
 
 The injected block explicitly says retrieved records are untrusted context and must not be treated as instructions unless the current user asks.
 
@@ -62,10 +62,10 @@ The injected block explicitly says retrieved records are untrusted context and m
 The repo map is saved to:
 
 ```text
-<project>/.pi/hybrid-memory/repomap.json
+<project>/.omp/hybrid-memory/repomap.json
 ```
 
-It indexes tracked files and untracked non-ignored files, excluding `.pi/`, `.git/`, `node_modules/`, noisy home/cache paths, common binary/archive/database files, and sensitive paths.
+It indexes tracked files and untracked non-ignored files, excluding `.omp/`, `.git/`, `node_modules/`, noisy home/cache paths, common binary/archive/database files, and sensitive paths.
 
 For each mappable file it records:
 
@@ -73,11 +73,11 @@ For each mappable file it records:
 - file kind
 - imports
 - symbols
-- registered Pi commands/tools/hooks where detectable
+- registered OMP commands/tools/hooks where detectable
 - exports
 - size
 
-The map is used for `/hmemory-repo`, `context.md`, dashboard summaries, and prompt-time repo matches. Repo-map file and read-size caps are configurable through Pi settings while remaining bounded by safe min/max ranges.
+The map is used for `/hmemory-repo`, `context.md`, dashboard summaries, and prompt-time repo matches. Repo-map file and read-size caps are configurable through OMP settings while remaining bounded by safe min/max ranges.
 
 During pruning, active unpinned `codebase_note` records are marked stale if a referenced file is missing or has changed since the memory was last updated. This keeps source files ahead of old memory claims.
 
@@ -85,7 +85,7 @@ During pruning, active unpinned `codebase_note` records are marked stale if a re
 
 `/hmemory-audit` builds a bounded audit packet from active records, local hygiene flags, duplicate-subject hints, and repo-map freshness. The packet is redacted with the same best-effort secret redaction used for storage and injection.
 
-The selected Pi model returns strict JSON with a short report plus structured actions. Supported actions are:
+The selected OMP model returns strict JSON with a short report plus structured actions. Supported actions are:
 
 - `set_status` — mark records `stale`, `done`, or `superseded`
 - `set_pinned` — pin or unpin records
@@ -93,11 +93,11 @@ The selected Pi model returns strict JSON with a short report plus structured ac
 - `create_record` — add a compact new record
 - `merge_records` — create one clean superseding record and mark sources superseded
 
-The extension validates ids, scopes, kinds, statuses, and field sizes before applying. Reports are saved in `<project>/.pi/hybrid-memory/audits/`.
+The extension validates ids, scopes, kinds, statuses, and field sizes before applying. Reports are saved in `<project>/.omp/hybrid-memory/audits/`.
 
 ## Hooks
 
-The extension uses Pi hooks to keep context fresh:
+The extension uses OMP extension hooks to keep context fresh:
 
 - `session_start` — initialize files, run a cheap startup refresh, maybe build a small repo map, import current/recent project sessions, and update the status chrome.
 - `before_agent_start` — auto-capture durable preference prompts and inject relevant memory.

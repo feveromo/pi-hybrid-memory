@@ -1,14 +1,14 @@
 # Security and privacy
 
-`pi-hybrid-memory` is designed to keep memory local and inspectable, but it still stores derived context from prompts, sessions, and repo metadata. Treat the memory files as private user data.
+`omp-hybrid-memory` is designed to keep memory local and inspectable, but it still stores derived context from prompts, sessions, and repo metadata. Treat the memory files as private user data.
 
 ## Local storage only
 
 By default, records are written to local files:
 
 ```text
-~/.pi/agent/memory/
-<project>/.pi/hybrid-memory/
+~/.omp/agent/memory/
+<project>/.omp/hybrid-memory/
 ```
 
 The extension does not require a hosted service, vector database, or external graph database.
@@ -28,7 +28,7 @@ Redaction is best-effort. Do not intentionally store secrets in memory.
 
 ## Sensitive paths and repo maps
 
-The repo map excludes sensitive paths, `.pi/`, `.git/`, `node_modules/`, noisy home/cache paths, common binary/archive/database files, and other runtime output.
+The repo map excludes sensitive paths, `.omp/`, `.git/`, `node_modules/`, noisy home/cache paths, common binary/archive/database files, and other runtime output.
 
 This reduces accidental exposure in generated summaries and prompt-time repo-map matches.
 
@@ -42,7 +42,7 @@ This is important because old conversation text can contain stale instructions, 
 
 ## Model audit safety
 
-`/hmemory-audit` is explicit and opt-in. It sends a bounded, best-effort-redacted packet of active memory records to the currently selected Pi model/provider, then validates the model's structured cleanup plan before applying anything.
+`/hmemory-audit` is explicit and opt-in. It sends a bounded, best-effort-redacted packet of active memory records to the currently selected OMP model/provider, then validates the model's structured cleanup plan before applying anything.
 
 Applied changes are append-only:
 
@@ -51,7 +51,7 @@ Applied changes are append-only:
 - merges create a new superseding record and mark source records superseded
 - records are not physically deleted
 
-In interactive mode, `/hmemory-audit` asks before applying unless you pass `apply`. Use `preview` for report-only. Reports are saved under `<project>/.pi/hybrid-memory/audits/`.
+In interactive mode, `/hmemory-audit` asks before applying unless you pass `apply`. Use `preview` for report-only. Reports are saved under `<project>/.omp/hybrid-memory/audits/`.
 
 ## Session import safety
 
@@ -70,7 +70,7 @@ Use `/hmemory-review`, `/hmemory-show`, and the generated `summary.md` files to 
 Project memory files are runtime state. Usually keep them out of git:
 
 ```gitignore
-.pi/
+.omp/
 ```
 
 If you intentionally commit memory files for a shared fixture or demo, review them manually first.
@@ -90,7 +90,7 @@ If you intentionally commit memory files for a shared fixture or demo, review th
 Also inspect:
 
 ```text
-~/.pi/agent/memory/summary.md
-<project>/.pi/hybrid-memory/summary.md
-<project>/.pi/hybrid-memory/context.md
+~/.omp/agent/memory/summary.md
+<project>/.omp/hybrid-memory/summary.md
+<project>/.omp/hybrid-memory/context.md
 ```

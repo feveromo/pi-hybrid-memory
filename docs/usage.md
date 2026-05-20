@@ -1,6 +1,6 @@
 # Usage
 
-`pi-hybrid-memory` gives Pi a small, local memory layer backed by JSONL files and a lightweight repo map. It is designed to be inspectable, editable, and easy to disable or prune.
+`omp-hybrid-memory` gives OMP a small, local memory layer backed by JSONL files and a lightweight repo map. It is designed to be inspectable, editable, and easy to disable or prune.
 
 ## Daily workflow
 
@@ -14,7 +14,7 @@
 /hmemory-config
 ```
 
-Use `/hmemory-dashboard full` when you want command/tool/hook details from the repo map. Use `/hmemory-config` to inspect the active tuning loaded from Pi settings. `/hmemory` and `/hmemory-health` show active vs inactive counts so append-only history is not confused with useful current memory.
+Use `/hmemory-dashboard full` when you want command/tool/hook details from the repo map. Use `/hmemory-config` to inspect the active tuning loaded from OMP settings. `/hmemory` and `/hmemory-health` show active vs inactive counts so append-only history is not confused with useful current memory.
 
 ### Search memory
 
@@ -55,7 +55,7 @@ Pinned active records are favored during retrieval and shown before lower-salien
 /hmemory-forget obsolete package
 ```
 
-Records are append-only: status changes append a new latest version rather than rewriting history. In plain terms, “forget” means the record becomes inactive and stops being injected or returned by default search; it is not a hard delete of the JSONL history. If you pass a query instead of an id, Pi previews matching active records and tells you which scoped id to use.
+Records are append-only: status changes append a new latest version rather than rewriting history. In plain terms, “forget” means the record becomes inactive and stops being injected or returned by default search; it is not a hard delete of the JSONL history. If you pass a query instead of an id, OMP previews matching active records and tells you which scoped id to use.
 
 ### Run deterministic curation
 
@@ -65,7 +65,7 @@ Records are append-only: status changes append a new latest version rather than 
 /hmemory-doctor apply 8
 ```
 
-`/hmemory-doctor` is the local, no-model curation pass. It writes a report under `<project>/.pi/hybrid-memory/audits/` with:
+`/hmemory-doctor` is the local, no-model curation pass. It writes a report under `<project>/.omp/hybrid-memory/audits/` with:
 
 - active/inactive counts by scope/status
 - duplicate subject groups
@@ -74,7 +74,7 @@ Records are append-only: status changes append a new latest version rather than 
 - user/project scope review hints
 - before/after counts when applying
 
-Preview mode never changes records. Apply mode only appends `stale` statuses for deterministic hygiene candidates; it does not rewrite, merge, move scopes, or delete anything. Use `/hmemory-audit` when you want the selected Pi model to propose rewrites, merges, new clean records, or pinned changes.
+Preview mode never changes records. Apply mode only appends `stale` statuses for deterministic hygiene candidates; it does not rewrite, merge, move scopes, or delete anything. Use `/hmemory-audit` when you want the selected OMP model to propose rewrites, merges, new clean records, or pinned changes.
 
 ### Review records in the TUI
 
@@ -92,7 +92,7 @@ Keys inside the review overlay:
 - `d` — mark done
 - `q` / escape — close
 
-### Let the selected Pi model clean memory
+### Let the selected OMP model clean memory
 
 ```text
 /hmemory-audit
@@ -101,12 +101,12 @@ Keys inside the review overlay:
 /hmemory-audit apply session recaps
 ```
 
-The command sends a bounded, redacted packet of active memory records to the currently selected Pi model. The model returns a structured cleanup plan. The extension validates the plan and applies only append-only changes: mark stale/done/superseded, pin/unpin, rewrite a record head, create a clean record, or merge duplicates into a new superseding record.
+The command sends a bounded, redacted packet of active memory records to the currently selected OMP model. The model returns a structured cleanup plan. The extension validates the plan and applies only append-only changes: mark stale/done/superseded, pin/unpin, rewrite a record head, create a clean record, or merge duplicates into a new superseding record.
 
 In interactive mode, `/hmemory-audit` asks before applying. Use `preview` for report-only, or `apply` to skip confirmation. Reports are saved under:
 
 ```text
-<project>/.pi/hybrid-memory/audits/
+<project>/.omp/hybrid-memory/audits/
 ```
 
 ## Repo-map workflow
@@ -124,7 +124,7 @@ The injected memory block warns when the repo map is stale. Run `/hmemory-repoma
 
 ## Session import workflow
 
-Use session imports to mine compact recaps, reusable command recipes, and explicit durable preferences from local Pi session JSONL files.
+Use session imports to mine compact recaps, reusable command recipes, and explicit durable preferences from local OMP session JSONL files.
 
 ```text
 /hmemory-ingest-session current
@@ -152,7 +152,7 @@ Agents can use the registered tools directly:
   "scope": "project",
   "kind": "decision",
   "subject": "local-first architecture",
-  "content": "Keep pi-hybrid-memory local-first and Pi-native; avoid external services by default.",
+  "content": "Keep omp-hybrid-memory local-first and OMP-native; avoid external services by default.",
   "tags": ["architecture"],
   "salience": 4,
   "pinned": true
@@ -174,11 +174,11 @@ Useful tools:
 ## Generated files to inspect
 
 ```text
-~/.pi/agent/memory/summary.md
-<project>/.pi/hybrid-memory/summary.md
-<project>/.pi/hybrid-memory/context.md
-<project>/.pi/hybrid-memory/repomap.json
-<project>/.pi/hybrid-memory/audits/*.md
+~/.omp/agent/memory/summary.md
+<project>/.omp/hybrid-memory/summary.md
+<project>/.omp/hybrid-memory/context.md
+<project>/.omp/hybrid-memory/repomap.json
+<project>/.omp/hybrid-memory/audits/*.md
 ```
 
 These files are intentionally human-readable so you can audit what will influence future turns.

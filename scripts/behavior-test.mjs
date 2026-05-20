@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname);
-const tempRoot = mkdtempSync(join(tmpdir(), 'pi-hybrid-memory-behavior-'));
+const tempRoot = mkdtempSync(join(tmpdir(), 'omp-hybrid-memory-behavior-'));
 const tempHome = join(tempRoot, 'home');
 mkdirSync(tempHome, { recursive: true });
 process.env.HOME = tempHome;
+process.env.PI_CODING_AGENT_DIR = join(tempHome, '.omp', 'agent');
 
 function linkPackage(moduleRoot, packageName, target) {
   const link = join(moduleRoot, 'node_modules', ...packageName.split('/'));
@@ -20,23 +21,28 @@ function linkPackage(moduleRoot, packageName, target) {
 
 const moduleRoot = join(tempRoot, 'module');
 mkdirSync(moduleRoot, { recursive: true });
-const globalNodeModules = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
-const piRoot = join(globalNodeModules, '@earendil-works', 'pi-coding-agent');
-linkPackage(moduleRoot, '@earendil-works/pi-ai', join(piRoot, 'node_modules', '@earendil-works', 'pi-ai'));
-linkPackage(moduleRoot, '@earendil-works/pi-coding-agent', piRoot);
-linkPackage(moduleRoot, '@earendil-works/pi-tui', join(piRoot, 'node_modules', '@earendil-works', 'pi-tui'));
-linkPackage(moduleRoot, 'typebox', join(piRoot, 'node_modules', 'typebox'));
+
+function packageRoot(spec) {
+  const entry = fileURLToPath(import.meta.resolve(spec));
+  return basename(dirname(entry)) === 'src' ? dirname(dirname(entry)) : dirname(entry);
+}
+
+linkPackage(moduleRoot, '@oh-my-pi/pi-ai', packageRoot('@oh-my-pi/pi-ai'));
+linkPackage(moduleRoot, '@oh-my-pi/pi-coding-agent', packageRoot('@oh-my-pi/pi-coding-agent'));
+linkPackage(moduleRoot, '@oh-my-pi/pi-tui', packageRoot('@oh-my-pi/pi-tui'));
+const typebox = await import('@oh-my-pi/pi-coding-agent/extensibility/typebox');
+const zod = await import('zod/v4');
 const moduleFile = join(moduleRoot, 'hybrid-memory.ts');
 copyFileSync(join(repoRoot, 'extensions', 'hybrid-memory.ts'), moduleFile);
 const extension = (await import(pathToFileURL(moduleFile).href)).default;
 
 function projectMemoryDir(cwd) {
-  return join(cwd, '.pi', 'hybrid-memory');
+  return join(cwd, '.omp', 'hybrid-memory');
 }
 
 function readRecords(cwd, scope = 'project') {
   const file = scope === 'user'
-    ? join(tempHome, '.pi', 'agent', 'memory', 'records.jsonl')
+    ? join(tempHome, '.omp', 'agent', 'memory', 'records.jsonl')
     : join(projectMemoryDir(cwd), 'records.jsonl');
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8').split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
@@ -62,6 +68,10 @@ function makeHarness(cwd, sessionFile) {
     },
   };
   const pi = {
+    typebox,
+    zod,
+    logger: console,
+    pi: {},
     on: (event, handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
     registerCommand: (name, config) => commands.set(name, config),
     registerTool: (config) => tools.set(config.name, config),
@@ -117,7 +127,7 @@ function makeProject(name) {
     assert.equal(search.details.hits.length, 0, `${item.status} pinned record should not be returned by search`);
   }
 
-  const before = await h.emit('before_agent_start', { prompt: 'obsolete done stale superseded pinned memory', systemPrompt: 'base' });
+  const before = await h.emit('before_agent_start', { prompt: 'obsolete done stale superseded pinned memory', systemPrompt: ['base'] });
   const injected = String(before[0]?.systemPrompt ?? '');
   for (const item of inactive) assert(!injected.includes(item.content), `${item.status} pinned record should not be injected`);
 }
@@ -203,8 +213,8 @@ function makeProject(name) {
   const generic = await h.tool('hybrid_memory_remember', {
     scope: 'user',
     kind: 'preference',
-    subject: 'Review and patch important Pi extensions before relying on them',
-    content: 'When installing important Pi extensions, inspect source and validate instead of blindly installing.',
+    subject: 'Review and patch important OMP extensions before relying on them',
+    content: 'When installing important OMP extensions, inspect source and validate instead of blindly installing.',
     tags: ['pi', 'extension'],
     pinned: true,
     salience: 4,
@@ -272,11 +282,11 @@ function makeProject(name) {
   const cwd = makeProject('auto-capture');
   const h = makeHarness(cwd);
   const before = readRecords(cwd, 'user').length;
-  await h.emit('before_agent_start', { prompt: 'This temporary fixture should never be injected', systemPrompt: 'base' });
+  await h.emit('before_agent_start', { prompt: 'This temporary fixture should never be injected', systemPrompt: ['base'] });
   assert.equal(readRecords(cwd, 'user').length, before, 'one-off never wording should not become a durable preference');
-  await h.emit('before_agent_start', { prompt: 'gpt reviewed the extension and said this, fix everything that needs to be fixed please: Overall good. Main Issues: auto-capturing preferences is useful but heuristic. Best Next Fixes: tune it. Verdict: solid prototype with polish needed.'.repeat(2), systemPrompt: 'base' });
+  await h.emit('before_agent_start', { prompt: 'gpt reviewed the extension and said this, fix everything that needs to be fixed please: Overall good. Main Issues: auto-capturing preferences is useful but heuristic. Best Next Fixes: tune it. Verdict: solid prototype with polish needed.'.repeat(2), systemPrompt: ['base'] });
   assert.equal(readRecords(cwd, 'user').length, before, 'pasted reviews should not become durable preferences');
-  await h.emit('before_agent_start', { prompt: 'remember that I prefer compact answers in tests', systemPrompt: 'base' });
+  await h.emit('before_agent_start', { prompt: 'remember that I prefer compact answers in tests', systemPrompt: ['base'] });
   assert.equal(readRecords(cwd, 'user').length, before + 1, 'explicit remember/prefer prompt should be auto-captured');
 }
 
@@ -458,7 +468,7 @@ function makeProject(name) {
     tags: ['commands'],
     salience: 3,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'please run npm test and npm run validate', systemPrompt: 'base' });
+  const before = await h.emit('before_agent_start', { prompt: 'please run npm test and npm run validate', systemPrompt: ['base'] });
   const injected = String(before[0]?.systemPrompt ?? '');
   assert(!injected.includes('Useful validation/build commands: Useful project validation commands'), 'recipe display should strip stored prose prefixes');
   assert.equal((injected.match(/Useful validation\/build commands:/g) ?? []).length, 1, 'near-identical command recipes should be deduped in injection');
@@ -473,10 +483,10 @@ function makeProject(name) {
     kind: 'session_recap',
     subject: 'messy imported session',
     content: 'Prior session (.): first rough prompt | second useful prompt | +1 more. Outcomes: Done and validated. ## Changed files - `extensions/hybrid-memory.ts`. Tools: bash, read.',
-    filePaths: ['/tmp/pi-subagents-uid-1000/chain-runs/abc/progress.md', '/home/example/Pictures/Screenshots/Screenshot From 2026-05-16.png', '/home/example/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md', 'extensions/hybrid-memory.ts'],
+    filePaths: ['/tmp/pi-subagents-uid-1000/chain-runs/abc/progress.md', '/home/example/Pictures/Screenshots/Screenshot From 2026-05-16.png', '/home/example/.local/lib/node_modules/@oh-my-pi/pi-coding-agent/docs/extensions.md', 'extensions/hybrid-memory.ts'],
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'validated rough prompt hybrid memory', systemPrompt: 'base' });
+  const before = await h.emit('before_agent_start', { prompt: 'validated rough prompt hybrid memory', systemPrompt: ['base'] });
   const injected = String(before[0]?.systemPrompt ?? '');
   assert(injected.includes('outcome: Done and validated'), 'session recap display should lead with a concise outcome');
   assert(injected.includes('topics: first rough prompt / second useful prompt'), 'session recap display should keep compact topics');
@@ -499,7 +509,7 @@ function makeProject(name) {
     tags: ['session-import', 'recap'],
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'runtime context inspection', systemPrompt: 'base' });
+  const before = await h.emit('before_agent_start', { prompt: 'runtime context inspection', systemPrompt: ['base'] });
   const injected = String(before[0]?.systemPrompt ?? '');
   assert(!injected.includes('diagnostic context inspection recap'), 'context-inspection recaps should not be injected');
   assert(!injected.includes('[redacted-hybrid-memory-tag]'), 'context-inspection recap content should not leak into injection');
@@ -523,7 +533,7 @@ function makeProject(name) {
       salience: 5,
     });
   }
-  const before = await h.emit('before_agent_start', { prompt: 'settings panel commit abc1234', systemPrompt: 'base' });
+  const before = await h.emit('before_agent_start', { prompt: 'settings panel commit abc1234', systemPrompt: ['base'] });
   const injected = String(before[0]?.systemPrompt ?? '');
   assert.equal((injected.match(/abc1234/g) ?? []).length, 1, 'session recaps mentioning the same commit should dedupe in injection');
 }
@@ -542,9 +552,9 @@ function makeProject(name) {
     pinned: true,
     salience: 5,
   });
-  const unrelated = await h.emit('before_agent_start', { prompt: 'polish memory extension display', systemPrompt: 'base' });
+  const unrelated = await h.emit('before_agent_start', { prompt: 'polish memory extension display', systemPrompt: ['base'] });
   assert(!String(unrelated[0]?.systemPrompt ?? '').includes('Global editor telemetry hook'), 'unrelated pinned user codebase notes should stay out of injection despite generic terms');
-  const related = await h.emit('before_agent_start', { prompt: 'editor telemetry hook details', systemPrompt: 'base' });
+  const related = await h.emit('before_agent_start', { prompt: 'editor telemetry hook details', systemPrompt: ['base'] });
   assert(String(related[0]?.systemPrompt ?? '').includes('Global editor telemetry hook'), 'matching pinned user codebase notes should still be retrievable');
 }
 
@@ -561,17 +571,17 @@ function makeProject(name) {
     pinned: true,
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'validation commands npm test fixture smoke validate', systemPrompt: 'base' });
+  const before = await h.emit('before_agent_start', { prompt: 'validation commands npm test fixture smoke validate', systemPrompt: ['base'] });
   const injected = String(before[0]?.systemPrompt ?? '');
   assert(injected.includes('node scripts/test.mjs'), 'the sixth short validation command should be visible');
   assert(!injected.includes('+1 more'), 'exactly six short validation commands should not render as +1 more');
 }
 
-// Pi settings should tune injection section limits without changing code.
+// OMP settings should tune injection section limits without changing code.
 {
   const cwd = makeProject('settings-tuning');
-  mkdirSync(join(cwd, '.pi'), { recursive: true });
-  writeFileSync(join(cwd, '.pi', 'settings.json'), JSON.stringify({
+  mkdirSync(join(cwd, '.omp'), { recursive: true });
+  writeFileSync(join(cwd, '.omp', 'settings.json'), JSON.stringify({
     hybridMemory: {
       maxInjectChars: 2000,
       injectSectionLimits: { 'User Preferences': 1 },
@@ -595,7 +605,7 @@ function makeProject(name) {
     pinned: true,
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'configured preference lookup', systemPrompt: 'base' });
+  const before = await h.emit('before_agent_start', { prompt: 'configured preference lookup', systemPrompt: ['base'] });
   const injected = String(before[0]?.systemPrompt ?? '');
   assert(injected.includes('Alpha configured preference'), 'configured section limit should still include the first preference');
   assert(!injected.includes('Beta configured preference'), 'configured section limit should cap user preferences');
@@ -621,4 +631,15 @@ function makeProject(name) {
   assert(elapsedMs < 8000, `large repo-map smoke should stay bounded, took ${elapsedMs.toFixed(0)}ms`);
 }
 
-console.log('pi-hybrid-memory behavior tests ok');
+// Global OMP config.yml should be parsed for hybridMemory settings.
+{
+  writeFileSync(join(tempHome, '.omp', 'agent', 'config.yml'), `hybridMemory:
+  pruneActiveSessionRecaps: 17
+`);
+  const cwd = makeProject('global-yaml-settings');
+  const h = makeHarness(cwd);
+  await h.command('hmemory-config');
+  assert(h.notifications.some((n) => /"pruneActiveSessionRecaps": 17/.test(n.message)), 'global OMP config.yml should tune hybrid memory settings');
+}
+
+console.log('omp-hybrid-memory behavior tests ok');

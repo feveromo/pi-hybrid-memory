@@ -1,10 +1,10 @@
-# pi-hybrid-memory docs
+# omp-hybrid-memory docs
 
 Start here if you want more detail than the top-level README.
 
 - [Usage](usage.md) — daily workflows, commands, and tool examples.
 - [Architecture](architecture.md) — local-first design, storage model, hooks, repo maps, and injection.
-- [Configuration](configuration.md) — package install, storage paths, project detection, and runtime behavior.
+- [Configuration](configuration.md) — extension install, storage paths, project detection, and runtime behavior.
 - [Development](development.md) — project layout, validation commands, and maintenance notes.
 - [Security and privacy](security-and-privacy.md) — redaction, sensitive paths, untrusted injection, and local data handling.
 - [Reference](reference.md) — compact command/tool/record inventory.
