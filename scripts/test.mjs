@@ -62,7 +62,7 @@ assert.match(source, /const RECIPE_DISPLAY_COMMAND_LIMIT = 6;/, 'recipe injectio
 assert.match(source, /function shouldInjectPinnedByDefault/, 'pinned global records should still be scoped before default injection');
 assert.match(source, /function commandFamilyKey/, 'recipe commands should dedupe by command family');
 assert.match(source, /function visibleWidth/, 'TUI padding should use terminal cell widths for Unicode icons');
-assert.match(source, /import \{[^}]*Text[^}]*\} from "@oh-my-pi\/pi-tui";/, 'custom tool renderers should use the official Pi TUI Text component');
+assert.match(source, /const \{ CancellableLoader, Container, Spacer, Text \} = tuiRuntime;/, 'custom tool renderers should use the runtime TUI Text component');
 assert.equal(packageJson.peerDependencies?.['@oh-my-pi/pi-tui'], '*', 'package should declare OMP pi-tui as a peer dependency for custom renderers');
 assert.match(source, /function memoryKindIcon/, 'memory review and tool renderers should share kind icons');
 assert.match(source, /case "preference": return "💜";/, 'preference memories should keep a friendly icon');

@@ -1,5 +1,6 @@
 # Pi/runtime state
 .pi/
+.omp/
 
 # Clawpatch
 .clawpatch/

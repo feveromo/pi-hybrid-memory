@@ -1,6 +1,14 @@
-import { DynamicBorder, type ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { complete, type Message } from "@oh-my-pi/pi-ai";
-import { CancellableLoader, Container, Spacer, Text } from "@oh-my-pi/pi-tui";
+const codingAgentRuntime = await import("@oh-my-pi/pi-coding-agent").catch(() => import("@earendil-works/pi-coding-agent"));
+const aiRuntime = await import("@oh-my-pi/pi-ai").catch(() => import("@earendil-works/pi-ai"));
+const tuiRuntime = await import("@oh-my-pi/pi-tui").catch(() => import("@earendil-works/pi-tui"));
+const typeboxRuntime = await import("typebox").catch(() => undefined);
+
+const { DynamicBorder } = codingAgentRuntime;
+const { complete } = aiRuntime;
+const { CancellableLoader, Container, Spacer, Text } = tuiRuntime;
+
+type ExtensionAPI = any;
+type Message = any;
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -3191,8 +3199,9 @@ async function generateMemoryAudit(cwd: string, ctx: any, query?: string, signal
 }
 
 export default function (pi: ExtensionAPI) {
-  const { Type } = pi.typebox;
-  const StringEnum = (values: readonly string[]) => Type.Enum(values);
+  const Type = pi.typebox?.Type ?? typeboxRuntime?.Type;
+  const StringEnum = aiRuntime.StringEnum ?? ((values: readonly string[]) => Type.Enum(values));
+  if (!Type) throw new Error("Hybrid memory extension could not find a TypeBox-compatible schema builder.");
 
   function updateMemoryChrome(ctx: any) {
     const counts = activeCounts(ctx.cwd);
