@@ -52,9 +52,10 @@ Pinned active records are favored during retrieval and shown before lower-salien
 /hmemory-forget <id> stale
 /hmemory-forget <id> done
 /hmemory-forget <id> superseded
+/hmemory-forget obsolete package
 ```
 
-Records are append-only: status changes append a new latest version rather than rewriting history.
+Records are append-only: status changes append a new latest version rather than rewriting history. In plain terms, “forget” means the record becomes inactive and stops being injected or returned by default search; it is not a hard delete of the JSONL history. If you pass a query instead of an id, Pi previews matching active records and tells you which scoped id to use.
 
 ### Run deterministic curation
 
@@ -163,7 +164,7 @@ Useful tools:
 - `/hmemory-audit` for model-assisted cleanup and organization
 - `hybrid_memory_remember`
 - `hybrid_memory_search`
-- `hybrid_memory_forget`
+- `hybrid_memory_forget` — use optional `tombstone: true` plus `tombstoneNote` when retiring details but keeping a small “do not suggest this again” preference
 - `hybrid_memory_import_sessions`
 - `hybrid_memory_refresh_context`
 - `hybrid_memory_bootstrap_project`

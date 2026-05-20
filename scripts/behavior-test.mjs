@@ -48,14 +48,15 @@ function makeHarness(cwd, sessionFile) {
   const handlers = new Map();
   const notifications = [];
   const statuses = [];
-  const theme = { fg: (_color, text) => text, bold: (text) => text };
+  const widgets = [];
+  const theme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text };
   const ctx = {
     cwd,
     sessionManager: { getSessionFile: () => sessionFile },
     ui: {
       theme,
       setStatus: (key, value) => statuses.push({ key, value }),
-      setWidget: () => {},
+      setWidget: (key, value) => widgets.push({ key, value }),
       notify: (message, level = 'info') => notifications.push({ message, level }),
       custom: async () => undefined,
     },
@@ -70,6 +71,8 @@ function makeHarness(cwd, sessionFile) {
     ctx,
     notifications,
     statuses,
+    widgets,
+    commands,
     command: async (name, args = '') => commands.get(name).handler(args, ctx),
     tool: async (name, params = {}) => tools.get(name).execute('test', params, undefined, () => {}, ctx),
     emit: async (event, payload = {}) => {
@@ -178,6 +181,54 @@ function makeProject(name) {
   const latestSecond = readRecords(cwd, 'project').filter((r) => r.id === second.details.id).at(-1);
   assert([latestFirst.status, latestSecond.status].includes('stale'), 'one duplicate policy record should be marked stale');
   assert(existsSync(applied.details.reportPath), 'doctor apply should write an apply report');
+}
+
+// Exact package searches and forget flows should be low-noise and honest about append-only status.
+{
+  const cwd = makeProject('exact-search-forget');
+  const h = makeHarness(cwd);
+  assert(!h.commands.has('hmemory-widget'), 'the persistent hmemory widget command should stay removed');
+  await h.emit('session_start');
+  await h.emit('resources_discover');
+  assert(h.widgets.some((w) => w.key === 'hybrid-memory' && w.value === undefined), 'startup/reload should clear any previously displayed hybrid-memory widget');
+
+  const exact = await h.tool('hybrid_memory_remember', {
+    scope: 'user',
+    kind: 'decision',
+    subject: 'Remove retired helper package',
+    content: 'Removed npm:@example/retired-helper-package from the agent setup; its optional service should stay disabled.',
+    tags: ['package', 'helper', 'service'], 
+    salience: 4,
+  });
+  const generic = await h.tool('hybrid_memory_remember', {
+    scope: 'user',
+    kind: 'preference',
+    subject: 'Review and patch important Pi extensions before relying on them',
+    content: 'When installing important Pi extensions, inspect source and validate instead of blindly installing.',
+    tags: ['pi', 'extension'],
+    pinned: true,
+    salience: 4,
+  });
+  const search = await h.tool('hybrid_memory_search', { query: '@example/retired-helper-package optional service package', includeInactive: true, limit: 10 });
+  assert.equal(search.details.hits[0].record.id, exact.details.id, 'exact package records should outrank generic extension memories');
+  assert(!search.details.hits.some((h) => h.record.id === generic.details.id), 'strong package queries should filter unrelated generic extension memories');
+
+  const forgot = await h.tool('hybrid_memory_forget', {
+    id: exact.details.id,
+    scope: 'user',
+    status: 'stale',
+    tombstone: true,
+    tombstoneNote: 'Do not suggest the retired helper package unless explicitly requested.',
+  });
+  assert.match(forgot.content[0].text, /append-only history retained, not hard-deleted/, 'forget result should explain stale vs hard delete');
+  assert(forgot.details.tombstone, 'forget can keep a tiny do-not-suggest tombstone when requested');
+  assert.equal(readRecords(cwd, 'user').filter((r) => r.id === exact.details.id).at(-1).status, 'stale', 'forgotten record should be stale');
+  assert(readRecords(cwd, 'user').some((r) => r.kind === 'preference' && r.status === 'active' && /retired helper package/.test(r.content)), 'tombstone should preserve the negative preference without reactivating old details');
+  await h.tool('hybrid_memory_forget', { id: generic.details.id, scope: 'user', status: 'stale' });
+  await h.tool('hybrid_memory_forget', { id: forgot.details.tombstone.id, scope: 'user', status: 'stale' });
+
+  await h.command('hmemory-forget', '@example/retired-helper-package stale');
+  assert.match(h.notifications.at(-1).message, /Matching active memories|No record found/, 'query forget should preview candidates instead of pretending to delete raw history');
 }
 
 // Stored records should redact common tokens and sensitive paths before they hit JSONL.
@@ -467,14 +518,14 @@ function makeProject(name) {
       scope: 'project',
       kind: 'session_recap',
       subject,
-      content: `Prior session (.): hmemory review popup polish. Outcomes: Done — committed and pushed. Commit: 6e61d8b Stabilize hmemory review overlay height.`,
+      content: `Prior session (.): settings panel polish. Outcomes: Done and validated. Commit: abc1234 Stabilize settings panel height.`,
       filePaths: ['extensions/hybrid-memory.ts'],
       salience: 5,
     });
   }
-  const before = await h.emit('before_agent_start', { prompt: 'hmemory review popup commit 6e61d8b', systemPrompt: 'base' });
+  const before = await h.emit('before_agent_start', { prompt: 'settings panel commit abc1234', systemPrompt: 'base' });
   const injected = String(before[0]?.systemPrompt ?? '');
-  assert.equal((injected.match(/6e61d8b/g) ?? []).length, 1, 'session recaps mentioning the same commit should dedupe in injection');
+  assert.equal((injected.match(/abc1234/g) ?? []).length, 1, 'session recaps mentioning the same commit should dedupe in injection');
 }
 
 // Pinned user codebase notes should not appear globally unless the prompt or paths make them relevant.
@@ -484,17 +535,17 @@ function makeProject(name) {
   await h.tool('hybrid_memory_remember', {
     scope: 'user',
     kind: 'codebase_note',
-    subject: 'global copilot telemetry tap',
-    content: 'Global Copilot telemetry extension tap should only appear when directly relevant',
+    subject: 'global editor telemetry hook',
+    content: 'Global editor telemetry hook should only appear when directly relevant',
     tags: ['memory-audit'],
     filePaths: ['/tmp/outside/extensions/extension.js'],
     pinned: true,
     salience: 5,
   });
   const unrelated = await h.emit('before_agent_start', { prompt: 'polish memory extension display', systemPrompt: 'base' });
-  assert(!String(unrelated[0]?.systemPrompt ?? '').includes('Global Copilot telemetry extension tap'), 'unrelated pinned user codebase notes should stay out of injection despite generic terms');
-  const related = await h.emit('before_agent_start', { prompt: 'Copilot telemetry tap details', systemPrompt: 'base' });
-  assert(String(related[0]?.systemPrompt ?? '').includes('Global Copilot telemetry extension tap'), 'matching pinned user codebase notes should still be retrievable');
+  assert(!String(unrelated[0]?.systemPrompt ?? '').includes('Global editor telemetry hook'), 'unrelated pinned user codebase notes should stay out of injection despite generic terms');
+  const related = await h.emit('before_agent_start', { prompt: 'editor telemetry hook details', systemPrompt: 'base' });
+  assert(String(related[0]?.systemPrompt ?? '').includes('Global editor telemetry hook'), 'matching pinned user codebase notes should still be retrievable');
 }
 
 // Six concise validation commands should fit without hiding one behind +1 more.

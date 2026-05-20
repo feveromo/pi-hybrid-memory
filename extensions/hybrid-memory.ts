@@ -44,7 +44,7 @@ const REPO_NOISE_TOP_LEVEL = new Set([
 ]);
 const HOME_REPO_NOISE_TOP_LEVEL = new Set([...REPO_NOISE_TOP_LEVEL, "Dev", "go", "node_modules", "pi-memory-backups"]);
 const GENERIC_MEMORY_QUERY_TERMS = new Set([
-  "agent", "audit", "code", "context", "display", "docs", "extension", "file", "fresh", "implementation", "local", "memory", "pi", "project", "prompt", "repo", "system", "user",
+  "agent", "audit", "code", "context", "display", "docs", "extension", "extensions", "file", "fresh", "implementation", "local", "mcp", "memory", "package", "packages", "pi", "project", "prompt", "repo", "search", "system", "tool", "tools", "user",
 ]);
 
 type MemoryKind = "preference" | "decision" | "project_fact" | "codebase_note" | "recipe" | "work_item" | "session_recap";
@@ -386,19 +386,31 @@ function recordHasProjectPath(cwd: string, r: MemoryRecord) {
 
 function distinctiveQueryTerms(query: string) {
   return [...new Set(tokenize(query)
-    .map((t) => t.replace(/^[-./:]+|[-./:]+$/g, ""))
+    .flatMap(searchTermVariants)
+    .map((t) => t.replace(/^[@\-./:]+|[@\-./:]+$/g, ""))
     .filter((t) => t.length >= 4 && !/^\d+$/.test(t) && !GENERIC_MEMORY_QUERY_TERMS.has(t)))];
+}
+
+function strongQueryTerms(query: string) {
+  return distinctiveQueryTerms(query).filter((t) => t.length >= 7 || /[./:_-]/.test(t));
+}
+
+function recordDirectlyMatchesTerms(r: MemoryRecord, terms: string[]) {
+  if (!terms.length) return false;
+  const direct = [recordKey(r), r.id, r.kind, r.subject, r.content, ...(r.tags ?? []), ...(sanitizeFilePaths(r.filePaths) ?? []), ...(r.symbols ?? [])].join(" ").toLowerCase();
+  return terms.some((t) => searchTermVariants(t).some((variant) => direct.includes(variant)));
 }
 
 function recordDirectlyMatchesQuery(r: MemoryRecord, query: string) {
   const terms = distinctiveQueryTerms(query);
   if (!terms.length) return false;
-  const direct = [r.subject, r.content, ...(sanitizeFilePaths(r.filePaths) ?? []), ...(r.symbols ?? [])].join(" ").toLowerCase();
-  const matches = terms.filter((t) => direct.includes(t));
+  const matches = terms.filter((t) => recordDirectlyMatchesTerms(r, [t]));
   return matches.some((t) => t.length >= 7 || /[./:_-]/.test(t)) || matches.length >= 2;
 }
 
 function shouldIncludeSearchHit(cwd: string, r: MemoryRecord, query: string) {
+  const strongTerms = strongQueryTerms(query);
+  if (strongTerms.length && !recordDirectlyMatchesTerms(r, strongTerms)) return false;
   if (r.scope === "user" && (r.kind === "codebase_note" || r.kind === "recipe" || r.kind === "project_fact")) {
     return recordHasProjectPath(cwd, r) || recordDirectlyMatchesQuery(r, query);
   }
@@ -538,22 +550,51 @@ function activeRecords(records: MemoryRecord[]) {
 }
 
 function tokenize(text: string): string[] {
-  return text.toLowerCase().match(/[a-z0-9_./:-]{2,}/g) ?? [];
+  return text.toLowerCase().match(/[@a-z0-9_./:-]{2,}/g) ?? [];
+}
+
+function searchTermVariants(term: string) {
+  const clean = term.toLowerCase().replace(/^[@\-./:]+|[@\-./:]+$/g, "");
+  const variants = new Set([term.toLowerCase(), clean].filter(Boolean));
+  const scoped = term.match(/@[-a-z0-9_.]+\/[a-z0-9_.-]+/i)?.[0]?.toLowerCase();
+  if (scoped) variants.add(scoped);
+  if (term.includes(":")) variants.add(term.slice(term.indexOf(":") + 1).toLowerCase());
+  return [...variants].filter((v) => v.length >= 2);
+}
+
+function termLooksExactIdentifier(term: string) {
+  return /@[-a-z0-9_.]+\/[a-z0-9_.-]+/i.test(term)
+    || /(?:npm|git|github):/i.test(term)
+    || /[a-z0-9_.-]+\/[a-z0-9_.-]+/i.test(term)
+    || /[a-z0-9]+(?:-[a-z0-9]+){1,}/i.test(term);
+}
+
+function searchTermWeight(term: string) {
+  const clean = term.replace(/^[@\-./:]+|[@\-./:]+$/g, "");
+  if (!clean || /^\d+$/.test(clean)) return 0;
+  if (termLooksExactIdentifier(term)) return 14;
+  if (GENERIC_MEMORY_QUERY_TERMS.has(clean)) return 1;
+  if (/[./:_-]/.test(term)) return 6;
+  if (clean.length >= 8) return 4;
+  return 2;
 }
 
 function recordHaystack(r: MemoryRecord) {
-  return [r.kind, r.subject, r.content, ...(r.tags ?? []), ...(r.filePaths ?? []), ...(r.symbols ?? [])].join(" ").toLowerCase();
+  return [recordKey(r), r.id, r.kind, r.subject, r.content, ...(r.tags ?? []), ...(r.filePaths ?? []), ...(r.symbols ?? [])].join(" ").toLowerCase();
 }
 
 function lexicalRecordScore(r: MemoryRecord, query: string) {
-  const q = tokenize(query);
+  const q = [...new Set(tokenize(query))];
   const h = recordHaystack(r);
   let lexicalScore = 0;
   for (const t of q) {
-    if (h.includes(t)) lexicalScore += t.includes("/") || t.includes(".") ? 5 : 2;
-    if (r.filePaths?.some((p) => p.toLowerCase().includes(t))) lexicalScore += 5;
-    if (r.symbols?.some((s) => s.toLowerCase() === t)) lexicalScore += 4;
-    if (r.tags?.some((tag) => tag.toLowerCase() === t)) lexicalScore += 3;
+    const variants = searchTermVariants(t);
+    const weight = searchTermWeight(t);
+    if (!weight) continue;
+    if (variants.some((variant) => h.includes(variant))) lexicalScore += weight;
+    if (variants.some((variant) => r.filePaths?.some((p) => p.toLowerCase().includes(variant)))) lexicalScore += Math.max(5, weight);
+    if (variants.some((variant) => r.symbols?.some((s) => s.toLowerCase() === variant))) lexicalScore += Math.max(4, Math.ceil(weight / 2));
+    if (variants.some((variant) => r.tags?.some((tag) => tag.toLowerCase() === variant))) lexicalScore += Math.max(3, Math.ceil(weight / 2));
   }
   return lexicalScore;
 }
@@ -700,6 +741,54 @@ function updateResultText(result: UpdateRecordResult, rawId: string, action: str
   if (result.updated) return `memory ${recordKey(result.updated)} ${action}`;
   if (result.ambiguous?.length) return `Ambiguous memory id ${rawId}; use ${result.ambiguous.map(recordKey).join(" or ")}.`;
   return `No record found for ${rawId}.`;
+}
+
+function inactiveStatusExplanation(status: MemoryStatus) {
+  if (status === "active") return "active again";
+  return `${status} (inactive; append-only history retained, not hard-deleted)`;
+}
+
+function forgetResultText(result: UpdateRecordResult, rawId: string, status: MemoryStatus, tombstone?: MemoryRecord) {
+  if (result.updated) {
+    const extra = tombstone ? ` Kept a tiny active do-not-suggest note: ${recordKey(tombstone)}.` : "";
+    return `memory ${recordKey(result.updated)} marked ${inactiveStatusExplanation(status)}.${extra}`;
+  }
+  if (result.ambiguous?.length) return `Ambiguous memory id ${rawId}; use ${result.ambiguous.map(recordKey).join(" or ")}.`;
+  return `No record found for ${rawId}.`;
+}
+
+function createForgetTombstone(cwd: string, forgotten: MemoryRecord, note?: string) {
+  const subject = `Do not suggest ${forgotten.subject}`;
+  const content = compactText(redactSecrets(note?.trim() || `Do not suggest ${forgotten.subject} again unless explicitly requested.`), 240);
+  const ts = nowIso();
+  const rec: MemoryRecord = {
+    id: stableId("preference", subject, `forget-tombstone:${recordKey(forgotten)}`),
+    schemaVersion: 1,
+    scope: "user",
+    kind: "preference",
+    subject: compactText(subject, 64),
+    content,
+    tags: ["forget-tombstone", "do-not-suggest"],
+    status: "active",
+    salience: 4,
+    pinned: true,
+    evidence: { source: "hybrid_memory_forget", forgotten: recordKey(forgotten), createdAt: ts },
+    createdAt: ts,
+    updatedAt: ts,
+  };
+  appendRecordIfChanged(cwd, rec);
+  return latestRecords(allRecords(cwd)).find((r) => recordKey(r) === recordKey(rec)) ?? rec;
+}
+
+function formatForgetPreview(cwd: string, query: string, status: MemoryStatus) {
+  const hits = searchRecordsWithOptions(cwd, query, 8, { status: "active" });
+  if (!hits.length) return `No record found for ${query}.`;
+  const lines = [
+    `No exact memory id found for "${redactSecrets(query)}". Matching active memories:`,
+    ...hits.map((h) => `- ${recordKey(h.record)} [${h.record.kind}, score ${h.score}]: ${redactSecrets(compactText(h.record.subject, 80))}`),
+    `Run /hmemory-forget <scoped-id> ${status} to mark one inactive. Forgetting is append-only; it does not hard-delete history.`,
+  ];
+  return lines.join("\n");
 }
 
 function resolveRecord(cwd: string, rawId: string, scope?: MemoryScope): UpdateRecordResult {
@@ -1968,6 +2057,10 @@ function stripAnsi(text: string) {
 }
 
 function ansi(code: string, text: string) {
+  // Use narrow SGR resets so nested foreground/bold styling does not clear
+  // review overlay row backgrounds applied outside the styled spans.
+  if (code === "1") return `\x1b[1m${text}\x1b[22m`;
+  if (code.startsWith("38;")) return `\x1b[${code}m${text}\x1b[39m`;
   return `\x1b[${code}m${text}\x1b[0m`;
 }
 
@@ -2133,7 +2226,7 @@ const REVIEW_LIST_ROWS = 11;
 const REVIEW_DETAIL_ROWS = 5;
 
 function reviewKindLabel(r: MemoryRecord) {
-  return `${padVisible(memoryKindIcon(r.kind), 2)}${r.kind.replace(/_/g, " ")}`;
+  return `${memoryKindIcon(r.kind)} ${r.kind.replace(/_/g, " ")}`;
 }
 
 function cleanSessionTopics(text: string) {
@@ -2194,11 +2287,16 @@ function reviewPreview(r: MemoryRecord, max: number) {
   return compactText(redactSecrets(text), max);
 }
 
-function buildReviewLines(records: MemoryRecord[], selected: number, _theme: any, width: number) {
+function reviewPanelBg(theme: any, text: string, selected = false) {
+  if (!theme?.bg) return text;
+  return theme.bg(selected ? "selectedBg" : "customMessageBg", text);
+}
+
+function buildReviewLines(records: MemoryRecord[], selected: number, theme: any, width: number) {
   const panelWidth = Math.max(64, width);
   const inner = Math.max(24, panelWidth - 4);
-  const border = (left: string, fill: string, right: string) => warp.purple(left + fill.repeat(Math.max(0, panelWidth - 2)) + right);
-  const row = (text: string) => ` ${padVisible(clip(text, inner), inner)} `;
+  const border = (left: string, fill: string, right: string) => reviewPanelBg(theme, warp.purple(left + fill.repeat(Math.max(0, panelWidth - 2)) + right));
+  const row = (text: string, selectedRow = false) => reviewPanelBg(theme, ` ${padVisible(clip(text, inner), inner)} `, selectedRow);
   const divider = () => row(warp.faint("─".repeat(inner)));
   const title = `${warp.pink("✺")} ${warp.cyan(bold("Memory Review"))} ${warp.dim(`${records.length} active`)}`;
   const lines = [
@@ -2234,7 +2332,7 @@ function buildReviewLines(records: MemoryRecord[], selected: number, _theme: any
     const scopeText = padVisible(r.scope, 7);
     const scope = r.scope === "project" ? warp.blue(scopeText) : warp.purple(scopeText);
     const preview = isSelected ? warp.green(reviewPreview(r, inner - 37)) : reviewPreview(r, inner - 37);
-    lines.push(row(`${marker} ${pin} ${label} ${scope} ${preview}`));
+    lines.push(row(`${marker} ${pin} ${label} ${scope} ${preview}`, isSelected));
   }
 
   lines.push(divider());
@@ -3034,7 +3132,10 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setStatus("hybrid-memory-compact", undefined);
   }
 
+  const clearRemovedWidget = (ctx: any) => ctx.ui.setWidget?.("hybrid-memory", undefined);
+
   pi.on("session_start", async (_event, ctx) => {
+    clearRemovedWidget(ctx);
     const p = paths(ctx.cwd);
     initializeDir(p.user, "user");
     initializeDir(p.project, "project");
@@ -3050,6 +3151,10 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`hybrid memory startup skipped: ${err instanceof Error ? err.message : String(err)}`, "info");
     }
     updateMemoryChrome(ctx);
+  });
+
+  pi.on("resources_discover", async (_event, ctx) => {
+    clearRemovedWidget(ctx);
   });
 
   pi.on("session_compact", async (event: any, ctx) => {
@@ -3122,13 +3227,19 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("hmemory-forget", {
-    description: "Mark a memory stale/done/superseded: /hmemory-forget <id> [status]",
+    description: "Mark a memory stale/done/superseded: /hmemory-forget <id|query> [status]",
     handler: async (args, ctx) => {
-      const [id, statusArg] = args.trim().split(/\s+/);
-      if (!id) return ctx.ui.notify("Usage: /hmemory-forget <id> [stale|done|superseded]", "error");
+      const tokens = args.match(/(?:"[^"]*"|'[^']*'|\S+)/g)?.map(cleanArgToken) ?? [];
+      const statusArg = tokens.at(-1);
       const status = statusEnum.includes(statusArg as MemoryStatus) ? statusArg as MemoryStatus : "stale";
-      const result = updateRecord(ctx.cwd, id, { status });
-      ctx.ui.notify(updateResultText(result, id, `-> ${status}`), result.updated ? "success" : "error");
+      const target = (statusArg && statusEnum.includes(statusArg as MemoryStatus) ? tokens.slice(0, -1) : tokens).join(" ").trim();
+      if (!target) return ctx.ui.notify("Usage: /hmemory-forget <id|query> [stale|done|superseded]", "error");
+      const result = updateRecord(ctx.cwd, target, { status });
+      if (result.updated || result.ambiguous?.length) {
+        ctx.ui.notify(forgetResultText(result, target, status), result.updated ? "success" : "error");
+        return;
+      }
+      ctx.ui.notify(formatForgetPreview(ctx.cwd, target, status), "info");
     },
   });
 
@@ -3320,7 +3431,7 @@ export default function (pi: ExtensionAPI) {
           updateMemoryChrome(ctx);
           tui.requestRender();
         },
-      }), { overlay: true, overlayOptions: { width: "72%", minWidth: 70, maxHeight: "85%", anchor: "center", margin: 1 } });
+      }), { overlay: true, overlayOptions: { width: "62%", minWidth: 76, maxHeight: "82%", anchor: "top-center", offsetY: 2, margin: 1 } });
       updateMemoryChrome(ctx);
     },
   });
@@ -3396,23 +3507,6 @@ export default function (pi: ExtensionAPI) {
         handleInput: (data: string) => { if (data === "q" || data === "Q" || data === "\x1b") done(undefined); },
       }), { overlay: true, overlayOptions: { width: "80%", minWidth: 60, maxHeight: "70%", anchor: "center", margin: 1 } });
       updateMemoryChrome(ctx);
-    },
-  });
-
-  pi.registerCommand("hmemory-widget", {
-    description: "Toggle a compact hybrid-memory widget above the editor",
-    handler: async (args, ctx) => {
-      const off = args.trim() === "off" || args.trim() === "clear";
-      if (off) {
-        ctx.ui.setWidget("hybrid-memory", undefined);
-        return ctx.ui.notify("hybrid memory widget hidden", "info");
-      }
-      ctx.ui.setWidget("hybrid-memory", (_tui: any, theme: any) => ({
-        render: (width: number) => buildDashboardLines(ctx.cwd, theme, width).slice(0, 6),
-        invalidate: () => {},
-      }));
-      updateMemoryChrome(ctx);
-      ctx.ui.notify("hybrid memory widget shown; /hmemory-widget off to hide", "success");
     },
   });
 
@@ -3492,6 +3586,11 @@ export default function (pi: ExtensionAPI) {
     name: "hybrid_memory_search",
     label: "Hybrid Search",
     description: "Search local JSONL hybrid memory records by lexical/path/symbol relevance.",
+    promptSnippet: "Search user and project hybrid memory records; supports scope/kind/status filters.",
+    promptGuidelines: [
+      "Use one hybrid_memory_search call for both user and project memory by default; do not repeat identical searches just to check both scopes.",
+      "Use hybrid_memory_search status/includeInactive filters when auditing stale/done/superseded append-only history.",
+    ],
     parameters: Type.Object({
       query: Type.String(),
       limit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 })),
@@ -3537,11 +3636,17 @@ export default function (pi: ExtensionAPI) {
     name: "hybrid_memory_forget",
     label: "Hybrid Forget",
     description: "Mark a hybrid memory record done, stale, or superseded.",
+    promptGuidelines: [
+      "hybrid_memory_forget marks the latest record inactive through append-only JSONL history; it does not hard-delete raw history. Say this plainly when the user asks to forget.",
+      "When a user wants something retired and not suggested again, pass tombstone: true with a short generic note to keep a tiny active do-not-suggest preference while retiring the old record.",
+    ],
     parameters: Type.Object({
       id: Type.String(),
       status: Type.Optional(StringEnum(statusEnum)),
       scope: Type.Optional(StringEnum(scopeEnum)),
       note: Type.Optional(Type.String()),
+      tombstone: Type.Optional(Type.Boolean()),
+      tombstoneNote: Type.Optional(Type.String()),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return withHybridMemoryMutation(ctx.cwd, async () => {
@@ -3549,7 +3654,8 @@ export default function (pi: ExtensionAPI) {
         const patch: Partial<MemoryRecord> = { status };
         if (params.note) patch.evidence = { note: redactSecrets(params.note) };
         const result = updateRecord(ctx.cwd, params.id, patch, params.scope as MemoryScope | undefined);
-        return { content: [{ type: "text", text: updateResultText(result, params.id, `-> ${status}`) }], details: result };
+        const tombstone = result.updated && params.tombstone ? createForgetTombstone(ctx.cwd, result.updated, params.tombstoneNote ?? params.note) : undefined;
+        return { content: [{ type: "text", text: forgetResultText(result, params.id, status, tombstone) }], details: { ...result, tombstone } };
       });
     },
     renderCall(args, theme) {
@@ -3559,10 +3665,13 @@ export default function (pi: ExtensionAPI) {
     },
     renderResult(result, { expanded, isPartial }, theme) {
       if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🧹 updating memory…"));
-      const details = result.details as UpdateRecordResult | undefined;
+      const details = result.details as (UpdateRecordResult & { tombstone?: MemoryRecord }) | undefined;
       if (details?.updated) {
-        let text = `${memoryTheme(theme, "success", "✓ updated")} ${memoryRecordToolLine(theme, details.updated)}`;
+        const status = recordStatus(details.updated);
+        let text = `${memoryTheme(theme, "success", `✓ marked ${status}`)} ${memoryRecordToolLine(theme, details.updated)} ${memoryTheme(theme, "dim", status === "active" ? "active" : "inactive, append-only")}`;
+        if (expanded) text += `\n${memoryTheme(theme, "dim", status === "active" ? "record is active again" : "not hard-deleted; inactive records stay out of injection/search by default")}`;
         if (expanded && details.updated.evidence?.note) text += `\n${memoryTheme(theme, "dim", "note")} ${memoryToolPreview(details.updated.evidence.note, 160)}`;
+        if (details.tombstone) text += `\n${memoryTheme(theme, "warning", "do-not-suggest")} ${memoryRecordToolLine(theme, details.tombstone, 70, true)}`;
         return memoryToolText(text);
       }
       if (details?.ambiguous?.length) {

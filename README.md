@@ -36,7 +36,7 @@ It provides a small, inspectable memory layer for Pi agents:
 
 - `hybrid_memory_remember` — add a typed user/project memory record.
 - `hybrid_memory_search` — search memory records, with optional scope/kind/status filters.
-- `hybrid_memory_forget` — mark records `done`, `stale`, or `superseded`.
+- `hybrid_memory_forget` — mark records `done`, `stale`, or `superseded`; optionally keep a tiny active `tombstone`/`tombstoneNote` preference for “do not suggest this again” cases.
 - `hybrid_memory_doctor` — preview/apply deterministic cleanup candidates and write a curation report.
 - `hybrid_memory_stats` — show memory counts and paths.
 - `hybrid_memory_import_sessions` — import concise recaps/preferences from Pi session JSONL files.
@@ -49,7 +49,7 @@ It provides a small, inspectable memory layer for Pi agents:
 - `/hmemory` — show memory stats.
 - `/hmemory-config` — show active hybrid-memory tuning from Pi settings.
 - `/hmemory-search [--all] [--scope user|project] [--kind recipe] [--status stale] <query>` — search memory.
-- `/hmemory-forget <id> [status]` — mark a memory stale/done/superseded; use `user:<id>` or `project:<id>` if ambiguous.
+- `/hmemory-forget <id|query> [status]` — mark a memory stale/done/superseded; use `user:<id>` or `project:<id>` if ambiguous. If no id matches, it previews matching active records.
 - `/hmemory-repomap` — rebuild repo map for the current project.
 - `/hmemory-repo <query>` — search repo map files/symbols/imports/commands/tools/hooks.
 - `/hmemory-health` — show memory health, active/inactive counts, duplicate hints, and repo-map staleness.
@@ -59,7 +59,6 @@ It provides a small, inspectable memory layer for Pi agents:
 - `/hmemory-audit [preview|apply] [focus]` — use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes.
 - `/hmemory-prune [maxActiveRecaps]` — mark duplicate/old session recaps stale and optionally create a rollup.
 - `/hmemory-dashboard [full]` — open a styled TUI overlay with memory/repo health; `full` shows command/tool details.
-- `/hmemory-widget [off]` — show/hide a compact memory widget above the editor.
 - `/hmemory-context` — regenerate/show the compact working context file.
 - `/hmemory-work <description>` — create an active project work item.
 - `/hmemory-done <id>` — mark a memory/work item done.
