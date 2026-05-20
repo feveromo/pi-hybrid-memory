@@ -1,12 +1,12 @@
 {
-  "name": "pi-hybrid-memory",
+  "name": "omp-hybrid-memory",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first hybrid JSONL memory and repo-map extension for Pi.",
+  "description": "Local-first hybrid JSONL memory and repo-map extension for OMP.",
   "license": "MIT",
   "keywords": [
-    "pi-package",
-    "pi",
+    "omp-extension",
+    "omp",
     "memory",
     "agent-memory",
     "local-first"
@@ -19,28 +19,27 @@
   "bugs": {
     "url": "https://github.com/feveromo/pi-hybrid-memory/issues"
   },
-  "homepage": "https://github.com/feveromo/pi-hybrid-memory#readme",
+  "homepage": "https://github.com/feveromo/pi-hybrid-memory/tree/oh-my-pi#readme",
   "files": [
     "extensions/",
     "docs/",
     "README.md",
     "LICENSE"
   ],
-  "pi": {
+  "omp": {
     "extensions": ["./extensions/hybrid-memory.ts"]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "@oh-my-pi/pi-ai": "*",
+    "@oh-my-pi/pi-coding-agent": "*",
+    "@oh-my-pi/pi-tui": "*"
   },
   "scripts": {
-    "test": "node scripts/test.mjs && node scripts/behavior-test.mjs && npm run test:fixture",
-    "test:source": "node scripts/test.mjs",
-    "test:fixture": "node scripts/fixture-test.mjs",
-    "validate": "npm test && npm run smoke:load",
-    "smoke:load": "pi --no-session --no-extensions -e . -p '/hmemory-health'",
-    "smoke": "pi --no-session --no-extensions -e . -p --model openai-codex/gpt-5.4-mini 'Reply exactly: pi-hybrid-memory-ok'"
+    "test": "bun scripts/test.mjs && bun scripts/behavior-test.mjs && bun run test:fixture",
+    "test:source": "bun scripts/test.mjs",
+    "test:fixture": "bun scripts/fixture-test.mjs",
+    "validate": "bun run test && bun run smoke:load",
+    "smoke:load": "bun scripts/smoke-load.mjs",
+    "smoke": "bun scripts/smoke-load.mjs"
   }
 }

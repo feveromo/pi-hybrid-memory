@@ -6,8 +6,8 @@ const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.me
 
 assert.match(source, /sk-\(\?:ant-\|proj-\)\?\[A-Za-z0-9_-\]\{16,\}/, 'redaction should cover plain sk-... plus sk-ant-/sk-proj- keys');
 assert.doesNotMatch(source.match(/function durablePreferencePrompt[\s\S]*?\n}/)?.[0] ?? '', /\bi want\b/i, 'session preference import should not treat broad "i want" as durable');
-assert.match(source, /function hybridMemoryConfig/, 'tuning knobs should load from Pi settings');
-assert.match(source, /withFileMutationQueue/, 'mutating memory tools should use Pi file mutation queue for parallel tool safety');
+assert.match(source, /function hybridMemoryConfig/, 'tuning knobs should load from OMP settings');
+assert.match(source, /withFileMutationQueue/, 'mutating memory tools should use the local file mutation queue for parallel tool safety');
 assert.match(source, /function withHybridMemoryMutation/, 'mutating memory tools should share a local memory mutation wrapper');
 assert.match(source, /withFileMutationQueue\(join\(p\.user, RECORDS\)/, 'memory mutation queue should serialize user records first');
 assert.match(source, /withFileMutationQueue\(join\(p\.project, RECORDS\)/, 'memory mutation queue should serialize project records too');
@@ -16,7 +16,7 @@ assert.match(source, /\["ls-files", "--others", "--exclude-standard"\]/, 'repo m
 assert.match(source, /added after repo map generation/, 'repo map staleness should detect newly added files');
 assert.match(source, /slice\(0, config\.repoMapFileLimit\)/, 'repo-map file cap should be configurable');
 assert.match(source, /size <= config\.repoMapReadMaxBytes/, 'repo-map read-size cap should be configurable');
-assert.match(source, /!path\.startsWith\("\.pi\/"\)/, 'repo map should avoid indexing project .pi memory state');
+assert.match(source, /!path\.startsWith\("\.omp\/"\)/, 'repo map should avoid indexing project .omp memory state');
 assert.match(source, /REPO_NOISE_TOP_LEVEL/, 'repo map should define a noise filter for home-directory caches');
 assert.match(source, /isNoisyRepoPath\(path\)/, 'repo map should skip noisy home/cache paths before injection');
 assert.match(source, /function isHomeRepoNoise/, 'repo map should apply extra root-aware filtering when cwd is the home directory');
@@ -62,8 +62,8 @@ assert.match(source, /const RECIPE_DISPLAY_COMMAND_LIMIT = 6;/, 'recipe injectio
 assert.match(source, /function shouldInjectPinnedByDefault/, 'pinned global records should still be scoped before default injection');
 assert.match(source, /function commandFamilyKey/, 'recipe commands should dedupe by command family');
 assert.match(source, /function visibleWidth/, 'TUI padding should use terminal cell widths for Unicode icons');
-assert.match(source, /import \{[^}]*Text[^}]*\} from "@earendil-works\/pi-tui";/, 'custom tool renderers should use the official Pi TUI Text component');
-assert.equal(packageJson.peerDependencies?.['@earendil-works/pi-tui'], '*', 'package should declare pi-tui as a peer dependency for custom renderers');
+assert.match(source, /import \{[^}]*Text[^}]*\} from "@oh-my-pi\/pi-tui";/, 'custom tool renderers should use the official Pi TUI Text component');
+assert.equal(packageJson.peerDependencies?.['@oh-my-pi/pi-tui'], '*', 'package should declare OMP pi-tui as a peer dependency for custom renderers');
 assert.match(source, /function memoryKindIcon/, 'memory review and tool renderers should share kind icons');
 assert.match(source, /case "preference": return "💜";/, 'preference memories should keep a friendly icon');
 assert.match(source, /const labelText = padVisible\(reviewKindLabel\(r\), 18\)/, 'memory review kind labels should use a fixed-width Unicode-safe column');
@@ -84,7 +84,7 @@ assert.match(source, /function formatForgetPreview/, '/hmemory-forget should pre
 assert.match(source, /tombstone: Type\.Optional\(Type\.Boolean\(\)\)/, 'hybrid_memory_forget should support tiny do-not-suggest tombstones for removed items');
 assert.match(source, /tombstoneNote: Type\.Optional\(Type\.String\(\)\)/, 'hybrid_memory_forget should expose tombstoneNote for concise negative preferences');
 assert.match(source, /pi\.registerCommand\("hmemory-audit"/, 'memory audit command should be registered');
-assert.match(source, /complete\(\n    ctx\.model,\n    \{ systemPrompt: MEMORY_AUDIT_SYSTEM_PROMPT, messages: \[message\] \}/, 'memory audit should use the selected Pi model through pi-ai complete');
+assert.match(source, /complete\(\n    ctx\.model,\n    \{ systemPrompt: MEMORY_AUDIT_SYSTEM_PROMPT, messages: \[message\] \}/, 'memory audit should use the selected OMP model through pi-ai complete');
 assert.match(source, /function applyMemoryAuditPlan/, 'memory audit should be able to apply validated structured cleanup actions');
 assert.match(source, /type\": \"merge_records\"/, 'memory audit prompt should support model-proposed dedupe merges');
 assert.match(source, /lastAuditAppliedAt/, 'memory audit should persist apply metadata in project state');
@@ -101,9 +101,9 @@ assert.match(source, /if \(code\.startsWith\("38;"\)\) return `\\x1b\[\$\{code\}
 assert.match(source, /for \(let i = 0; i < REVIEW_DETAIL_ROWS; i\+\+\) lines\.push\(row\(detailRows\[i\] \?\? ""\)\);/, 'memory review should render a fixed-size details footer');
 assert.match(source, /function memoryToolCall/, 'hybrid memory tools should share polished call rendering helpers');
 assert.match(source, /return new Text\(text, 0, 0\);/, 'hybrid memory tool renderers should return Text components');
-assert.match(source, /renderCall\(args, theme\)/, 'hybrid memory tools should provide custom call rendering');
+assert.match(source, /renderCall\(args, _options, theme\)/, 'hybrid memory tools should provide custom call rendering');
 assert.match(source, /renderResult\(result, \{ expanded, isPartial \}, theme\)/, 'hybrid memory tools should provide custom result rendering with expanded and partial states');
-assert.equal((source.match(/name: "hybrid_memory_/g) ?? []).length, (source.match(/renderCall\(args, theme\)/g) ?? []).length, 'every hybrid memory tool should render a custom call row');
+assert.equal((source.match(/name: "hybrid_memory_/g) ?? []).length, (source.match(/renderCall\(args, _options, theme\)/g) ?? []).length, 'every hybrid memory tool should render a custom call row');
 assert.equal((source.match(/name: "hybrid_memory_/g) ?? []).length, (source.match(/renderResult\(result, \{ expanded, isPartial \}, theme\)/g) ?? []).length, 'every hybrid memory tool should render a custom result row');
 assert.doesNotMatch(source, /reviewKindLabel\(r\)\.padEnd/, 'memory review should not pad icon labels by raw string length');
 assert.match(source, /"Relevant Session Recaps": 2/, 'session recap injection should be tightly capped by default');
@@ -116,4 +116,4 @@ assert.match(source, /finally \{\n        updateMemoryChrome\(ctx\);\n      \}/,
 assert.doesNotMatch(source, /registerCommand\("hmemory-widget"/, 'persistent hmemory widget command should stay removed');
 assert.match(source, /clearRemovedWidget\(ctx\);/, 'extension startup/reload should clear any old persistent hybrid-memory widget');
 
-console.log('pi-hybrid-memory tests ok');
+console.log('omp-hybrid-memory tests ok');

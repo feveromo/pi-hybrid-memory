@@ -3,7 +3,7 @@
 ## Project layout
 
 ```text
-extensions/hybrid-memory.ts  # Pi extension, commands, tools, hooks, storage, repo map
+extensions/hybrid-memory.ts  # OMP extension, commands, tools, hooks, storage, repo map
 scripts/test.mjs             # source-level regression checks
 scripts/fixture-test.mjs     # fixture-style behavior checks
 README.md                    # quick overview
@@ -15,37 +15,37 @@ docs/                        # detailed documentation
 Run the fast tests while editing:
 
 ```bash
-npm test
-npm run test:fixture
+bun run test
+bun run test:fixture
 ```
 
-`npm test` includes source checks, behavior tests, and a bounded large-repo repo-map smoke test.
+`bun run test` includes source checks, behavior tests, and a bounded large-repo repo-map smoke test.
 
 Run the full local validation before handing off larger changes:
 
 ```bash
-npm run validate
+bun run validate
 ```
 
-`npm run validate` runs:
+`bun run validate` runs:
 
 ```bash
-npm test && npm run smoke:load
+bun run test && bun run smoke:load
 ```
 
-(`npm test` already includes the fixture test.)
+(`bun run test` already includes the fixture test.)
 
-`smoke:load` asks Pi to load this package and run `/hmemory-health` without a normal session.
+`smoke:load` imports the OMP extension, runs `session_start`, and executes the stats tool in a local harness without requiring a model.
 
 ## Development principles
 
-- Keep the extension local-first and Pi-native.
+- Keep the extension local-first and OMP-native.
 - Prefer JSONL/Markdown files over opaque databases.
 - Keep startup and per-turn work bounded.
 - Treat memory as untrusted context, not instructions.
 - Redact secrets before storing or injecting text.
-- Avoid indexing generated `.pi/` project state in the repo map.
-- Keep command and tool output concise enough for Pi notifications.
+- Avoid indexing generated `.omp/` project state in the repo map.
+- Keep command and tool output concise enough for OMP notifications.
 
 ## Editing records during development
 
@@ -69,7 +69,7 @@ When changing repo-map behavior, verify:
 
 - tracked and untracked non-ignored files are included
 - sensitive paths are excluded
-- `.pi/` runtime state is excluded
+- `.omp/` runtime state is excluded
 - noisy home/cache directories are excluded
 - staleness detects added, removed, and modified mapped files
 - pinned `done`/`stale`/`superseded` records stay out of search, injection, generated summaries, and context
