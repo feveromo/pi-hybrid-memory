@@ -49,9 +49,13 @@ Applied changes are append-only:
 - stale/done/superseded status updates append a newer record head
 - pin/unpin and rewrites append a newer record head
 - merges create a new superseding record and mark source records superseded
-- records are not physically deleted
+- records are not physically deleted by audit/forget/doctor flows
 
 In interactive mode, `/hmemory-audit` asks before applying unless you pass `apply`. Use `preview` for report-only. Reports are saved under `<project>/.pi/hybrid-memory/audits/`.
+
+## Hard-delete escape hatch
+
+Use `/hmemory-purge <scoped-id> --force` only for privacy cleanup where append-only forgetting is not enough. It rewrites the matching scope's `records.jsonl` and removes every version of the selected `scope:id`, then regenerates summaries/context. The audit marker records the id and number of removed JSONL entries, not the purged content.
 
 ## Session import safety
 
@@ -63,7 +67,7 @@ Session import is conservative:
 - redacts text and paths before writing records
 - prunes duplicate/old project session recaps
 
-Use `/hmemory-review`, `/hmemory-show`, and the generated `summary.md` files to audit imported memories.
+Use `/hmemory-review`, `/hmemory-show`, and the generated `summary.md` files to audit imported memories. Auto-capture can be disabled or widened with `hybridMemory.autoCapture.preferences` (`off`, `explicit`, or `heuristic`).
 
 ## Git hygiene
 
