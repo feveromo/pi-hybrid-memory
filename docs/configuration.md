@@ -54,7 +54,7 @@ Project memory:
   active.json   # generated active-work index
   context.md
   repomap.json
-  audits/       # model audit reports
+  audits/       # audit, doctor, and purge marker reports
   state.json
 ```
 
@@ -93,6 +93,7 @@ For larger or older projects, use an explicit command:
 /hmemory-review
 /hmemory-audit [preview|apply] [focus]
 /hmemory-forget <id|query> [stale|done|superseded]
+/hmemory-purge <scoped-id> --force
 ```
 
 ## Tuning knobs
@@ -105,6 +106,7 @@ The defaults are intentionally compact. If a large project needs different bound
     "maxInjectChars": 4200,
     "injectSectionLimits": {
       "User Preferences": 5,
+      "Global Decisions/Facts": 3,
       "Project Decisions": 5,
       "Active Work": 5,
       "Recipes": 3,
@@ -115,10 +117,13 @@ The defaults are intentionally compact. If a large project needs different bound
     "repoMapReadMaxBytes": 200000,
     "repoMapWalkFallbackLimit": 2000,
     "startupRepoMapFileLimit": 500,
+    "repoMapAutoInjectMinDistinctiveTerms": 2,
     "pruneActiveSessionRecaps": 12,
     "autoPruneActiveSessionRecaps": 8,
     "bootstrapPruneActiveSessionRecaps": 12,
-    "staleCodebaseNotesOnFileChange": true
+    "staleCodebaseNotesOnFileChange": true,
+    "autoCapturePreferences": "explicit",
+    "autoCaptureMaxChars": 240
   }
 }
 ```
@@ -132,7 +137,8 @@ You can also group repo-map and prune values if you prefer a tidier settings fil
       "fileLimit": 2500,
       "readMaxBytes": 200000,
       "walkFallbackLimit": 3000,
-      "startupFileLimit": 700
+      "startupFileLimit": 700,
+      "autoInjectMinDistinctiveTerms": 2
     },
     "prune": {
       "activeSessionRecaps": 16,
@@ -141,9 +147,21 @@ You can also group repo-map and prune values if you prefer a tidier settings fil
     },
     "compaction": {
       "staleCodebaseNotesOnFileChange": true
+    },
+    "autoCapture": {
+      "preferences": "explicit",
+      "maxChars": 240
     }
   }
 }
 ```
 
 Run `/hmemory-config` to inspect the effective values for the current project.
+
+`autoCapture.preferences` supports:
+
+- `off` — never auto-capture prompt preferences.
+- `explicit` — default; only explicit remember/always/never/prefer-style wording.
+- `heuristic` — also capture broader durable-looking wording such as “I like …” or “I don’t want …”.
+
+`repoMap.autoInjectMinDistinctiveTerms` controls automatic prompt-time repo-map matches. `/hmemory-repo <query>` remains permissive for manual searches.

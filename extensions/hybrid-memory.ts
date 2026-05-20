@@ -22,6 +22,7 @@ const AUDIT_PACKET_MAX_CHARS = 18_000;
 const REPO_STALENESS_CACHE_TTL_MS = 15_000;
 const INJECT_SECTION_LIMITS: Record<string, number> = {
   "User Preferences": 5,
+  "Global Decisions/Facts": 3,
   "Project Decisions": 5,
   "Active Work": 5,
   "Recipes": 3,
@@ -32,8 +33,11 @@ const DEFAULT_REPO_MAP_FILE_LIMIT = 1500;
 const DEFAULT_REPO_MAP_READ_MAX_BYTES = 200_000;
 const DEFAULT_REPO_MAP_WALK_FALLBACK_LIMIT = 2000;
 const DEFAULT_STARTUP_REPO_MAP_FILE_LIMIT = 500;
+const DEFAULT_REPO_MAP_AUTO_INJECT_MIN_DISTINCTIVE_TERMS = 2;
 const DEFAULT_PRUNE_ACTIVE_SESSION_RECAPS = 12;
 const DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS = 8;
+const DEFAULT_AUTO_CAPTURE_PREFERENCES: AutoCapturePreferenceMode = "explicit";
+const DEFAULT_AUTO_CAPTURE_MAX_CHARS = 240;
 const RECIPE_DISPLAY_COMMAND_LIMIT = 6;
 const SESSION_ROOT = join(homedir(), ".pi", "agent", "sessions");
 const SESSION_IMPORT_MAX_BYTES = 1_500_000;
@@ -50,6 +54,7 @@ const GENERIC_MEMORY_QUERY_TERMS = new Set([
 type MemoryKind = "preference" | "decision" | "project_fact" | "codebase_note" | "recipe" | "work_item" | "session_recap";
 type MemoryScope = "user" | "project";
 type MemoryStatus = "active" | "done" | "superseded" | "stale";
+type AutoCapturePreferenceMode = "off" | "explicit" | "heuristic";
 
 type MemoryRecord = {
   id: string;
@@ -99,6 +104,23 @@ type RepoStalenessCacheEntry = {
   result: RepoMapStaleness;
 };
 
+type RecordsFileCacheEntry = {
+  size: number;
+  mtimeMs: number;
+  records: MemoryRecord[];
+};
+
+type LatestRecordsCacheEntry = {
+  signature: string;
+  records: MemoryRecord[];
+};
+
+type RepoMapFileCacheEntry = {
+  size: number;
+  mtimeMs: number;
+  map?: RepoMap;
+};
+
 type HybridMemoryConfig = {
   maxInjectChars: number;
   injectSectionLimits: Record<string, number>;
@@ -106,10 +128,13 @@ type HybridMemoryConfig = {
   repoMapReadMaxBytes: number;
   repoMapWalkFallbackLimit: number;
   startupRepoMapFileLimit: number;
+  repoMapAutoInjectMinDistinctiveTerms: number;
   pruneActiveSessionRecaps: number;
   autoPruneActiveSessionRecaps: number;
   bootstrapPruneActiveSessionRecaps: number;
   staleCodebaseNotesOnFileChange: boolean;
+  autoCapturePreferences: AutoCapturePreferenceMode;
+  autoCaptureMaxChars: number;
 };
 
 const DEFAULT_HYBRID_MEMORY_CONFIG: HybridMemoryConfig = {
@@ -119,10 +144,13 @@ const DEFAULT_HYBRID_MEMORY_CONFIG: HybridMemoryConfig = {
   repoMapReadMaxBytes: DEFAULT_REPO_MAP_READ_MAX_BYTES,
   repoMapWalkFallbackLimit: DEFAULT_REPO_MAP_WALK_FALLBACK_LIMIT,
   startupRepoMapFileLimit: DEFAULT_STARTUP_REPO_MAP_FILE_LIMIT,
+  repoMapAutoInjectMinDistinctiveTerms: DEFAULT_REPO_MAP_AUTO_INJECT_MIN_DISTINCTIVE_TERMS,
   pruneActiveSessionRecaps: DEFAULT_PRUNE_ACTIVE_SESSION_RECAPS,
   autoPruneActiveSessionRecaps: DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS,
   bootstrapPruneActiveSessionRecaps: DEFAULT_PRUNE_ACTIVE_SESSION_RECAPS,
   staleCodebaseNotesOnFileChange: true,
+  autoCapturePreferences: DEFAULT_AUTO_CAPTURE_PREFERENCES,
+  autoCaptureMaxChars: DEFAULT_AUTO_CAPTURE_MAX_CHARS,
 };
 
 const kindEnum = ["preference", "decision", "project_fact", "codebase_note", "recipe", "work_item", "session_recap"] as const;
@@ -131,6 +159,9 @@ const statusEnum = ["active", "done", "superseded", "stale"] as const;
 const searchStatusEnum = ["active", "done", "superseded", "stale", "all"] as const;
 const doctorModeEnum = ["preview", "apply"] as const;
 const repoStalenessCache = new Map<string, RepoStalenessCacheEntry>();
+const recordsFileCache = new Map<string, RecordsFileCacheEntry>();
+const latestRecordsCache = new Map<string, LatestRecordsCacheEntry>();
+const repoMapFileCache = new Map<string, RepoMapFileCacheEntry>();
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -170,16 +201,21 @@ function mergeHybridMemoryConfig(base: HybridMemoryConfig, raw: unknown): Hybrid
   const repoMap: Record<string, unknown> = isPlainObject(raw.repoMap) ? raw.repoMap : {};
   const prune: Record<string, unknown> = isPlainObject(raw.prune) ? raw.prune : {};
   const compaction: Record<string, unknown> = isPlainObject(raw.compaction) ? raw.compaction : {};
+  const autoCapture: Record<string, unknown> = isPlainObject(raw.autoCapture) ? raw.autoCapture : {};
   config.maxInjectChars = clampSetting(raw.maxInjectChars, config.maxInjectChars, 1000, 30_000);
   config.repoMapFileLimit = clampSetting(raw.repoMapFileLimit ?? repoMap.fileLimit, config.repoMapFileLimit, 100, 20_000);
   config.repoMapReadMaxBytes = clampSetting(raw.repoMapReadMaxBytes ?? repoMap.readMaxBytes, config.repoMapReadMaxBytes, 16_000, 2_000_000);
   config.repoMapWalkFallbackLimit = clampSetting(raw.repoMapWalkFallbackLimit ?? repoMap.walkFallbackLimit, config.repoMapWalkFallbackLimit, 100, 50_000);
   config.startupRepoMapFileLimit = clampSetting(raw.startupRepoMapFileLimit ?? repoMap.startupFileLimit, config.startupRepoMapFileLimit, 0, 5000);
+  config.repoMapAutoInjectMinDistinctiveTerms = clampSetting(raw.repoMapAutoInjectMinDistinctiveTerms ?? repoMap.autoInjectMinDistinctiveTerms, config.repoMapAutoInjectMinDistinctiveTerms, 1, 6);
   config.pruneActiveSessionRecaps = clampSetting(raw.pruneActiveSessionRecaps ?? prune.activeSessionRecaps, config.pruneActiveSessionRecaps, 3, 100);
   config.autoPruneActiveSessionRecaps = clampSetting(raw.autoPruneActiveSessionRecaps ?? prune.autoActiveSessionRecaps, config.autoPruneActiveSessionRecaps, 3, 100);
   config.bootstrapPruneActiveSessionRecaps = clampSetting(raw.bootstrapPruneActiveSessionRecaps ?? prune.bootstrapActiveSessionRecaps, config.bootstrapPruneActiveSessionRecaps, 3, 100);
   const staleCodebaseNotesOnFileChange = raw.staleCodebaseNotesOnFileChange ?? compaction.staleCodebaseNotesOnFileChange;
   if (typeof staleCodebaseNotesOnFileChange === "boolean") config.staleCodebaseNotesOnFileChange = staleCodebaseNotesOnFileChange;
+  const autoCapturePreferences = raw.autoCapturePreferences ?? autoCapture.preferences;
+  if (autoCapturePreferences === "off" || autoCapturePreferences === "explicit" || autoCapturePreferences === "heuristic") config.autoCapturePreferences = autoCapturePreferences;
+  config.autoCaptureMaxChars = clampSetting(raw.autoCaptureMaxChars ?? autoCapture.maxChars, config.autoCaptureMaxChars, 80, 1000);
 
   const sectionLimits = raw.injectSectionLimits ?? raw.sectionLimits;
   if (isPlainObject(sectionLimits)) {
@@ -208,10 +244,13 @@ function publicHybridMemoryConfig(config: HybridMemoryConfig) {
     repoMapReadMaxBytes: config.repoMapReadMaxBytes,
     repoMapWalkFallbackLimit: config.repoMapWalkFallbackLimit,
     startupRepoMapFileLimit: config.startupRepoMapFileLimit,
+    repoMapAutoInjectMinDistinctiveTerms: config.repoMapAutoInjectMinDistinctiveTerms,
     pruneActiveSessionRecaps: config.pruneActiveSessionRecaps,
     autoPruneActiveSessionRecaps: config.autoPruneActiveSessionRecaps,
     bootstrapPruneActiveSessionRecaps: config.bootstrapPruneActiveSessionRecaps,
     staleCodebaseNotesOnFileChange: config.staleCodebaseNotesOnFileChange,
+    autoCapturePreferences: config.autoCapturePreferences,
+    autoCaptureMaxChars: config.autoCaptureMaxChars,
   };
 }
 
@@ -512,6 +551,9 @@ function initializeDir(dir: string, scope: MemoryScope) {
 
 function readRecordsFile(file: string): MemoryRecord[] {
   if (!existsSync(file)) return [];
+  const stat = statSync(file);
+  const cached = recordsFileCache.get(file);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.records;
   const out: MemoryRecord[] = [];
   const lines = readFileSync(file, "utf8").split(/\n+/).filter(Boolean);
   for (const line of lines) {
@@ -522,7 +564,26 @@ function readRecordsFile(file: string): MemoryRecord[] {
       // Keep append-only files resilient to manual edits.
     }
   }
+  recordsFileCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, records: out });
   return out;
+}
+
+function recordsFileStamp(file: string) {
+  if (!existsSync(file)) return `${file}:missing`;
+  const stat = statSync(file);
+  return `${file}:${stat.size}:${stat.mtimeMs}`;
+}
+
+function recordCachePaths(cwd: string) {
+  const p = paths(cwd);
+  return { user: join(p.user, RECORDS), project: join(p.project, RECORDS) };
+}
+
+function invalidateRecordsCache(cwd: string) {
+  const p = recordCachePaths(cwd);
+  recordsFileCache.delete(p.user);
+  recordsFileCache.delete(p.project);
+  latestRecordsCache.delete(`${p.user}|${p.project}`);
 }
 
 function allRecords(cwd: string): MemoryRecord[] {
@@ -539,6 +600,20 @@ function latestRecords(records: MemoryRecord[]): MemoryRecord[] {
   // stale project copy cannot hide an active user copy with the same id.
   for (const r of records) map.set(`${r.scope}:${r.id}`, r);
   return [...map.values()].filter((r) => !r.expiresAt || Date.parse(r.expiresAt) > Date.now());
+}
+
+function latestRecordsForCwd(cwd: string): MemoryRecord[] {
+  const p = paths(cwd);
+  initializeDir(p.user, "user");
+  initializeDir(p.project, "project");
+  const files = recordCachePaths(cwd);
+  const cacheKey = `${files.user}|${files.project}`;
+  const signature = `${recordsFileStamp(files.user)}|${recordsFileStamp(files.project)}`;
+  const cached = latestRecordsCache.get(cacheKey);
+  if (cached?.signature === signature) return cached.records;
+  const records = latestRecords([...readRecordsFile(files.user), ...readRecordsFile(files.project)]);
+  latestRecordsCache.set(cacheKey, { signature, records });
+  return records;
 }
 
 function isActiveRecord(r: MemoryRecord) {
@@ -614,7 +689,7 @@ function scoreRecord(r: MemoryRecord, query: string, cwd: string) {
 }
 
 function searchRecords(cwd: string, query: string, limit = 12) {
-  return latestRecords(allRecords(cwd))
+  return latestRecordsForCwd(cwd)
     .map((record) => ({ record, score: scoreRecord(record, query, cwd) }))
     .filter((x) => isActiveRecord(x.record) && x.score > 0 && shouldIncludeSearchHit(cwd, x.record, query))
     .sort((a, b) => b.score - a.score || b.record.updatedAt.localeCompare(a.record.updatedAt))
@@ -643,7 +718,7 @@ function scoreRecordWithSearchOptions(r: MemoryRecord, query: string, cwd: strin
 }
 
 function searchRecordsWithOptions(cwd: string, query: string, limit = 12, options: SearchRecordsOptions = {}) {
-  return latestRecords(allRecords(cwd))
+  return latestRecordsForCwd(cwd)
     .map((record) => ({ record, score: scoreRecordWithSearchOptions(record, query, cwd, options) }))
     .filter((x) => recordMatchesSearchOptions(x.record, options) && x.score > 0 && shouldIncludeSearchHit(cwd, x.record, query))
     .sort((a, b) => b.score - a.score || b.record.updatedAt.localeCompare(a.record.updatedAt))
@@ -652,27 +727,17 @@ function searchRecordsWithOptions(cwd: string, query: string, limit = 12, option
 
 function shouldInjectPinnedByDefault(cwd: string, r: MemoryRecord) {
   if (!isActiveRecord(r) || !r.pinned) return false;
-  if (r.kind === "preference" || r.kind === "decision" || r.kind === "work_item") return true;
+  if (r.kind === "preference" || r.kind === "decision" || r.kind === "project_fact" || r.kind === "work_item") return true;
   if (r.scope === "project") return true;
   return recordHasProjectPath(cwd, r);
 }
 
 function pinnedAndActiveRecords(cwd: string) {
-  return latestRecords(allRecords(cwd)).filter((r) => isActiveRecord(r) && (r.kind === "work_item" || shouldInjectPinnedByDefault(cwd, r)));
+  return latestRecordsForCwd(cwd).filter((r) => isActiveRecord(r) && (r.kind === "work_item" || shouldInjectPinnedByDefault(cwd, r)));
 }
 
 function recordKey(r: Pick<MemoryRecord, "scope" | "id">) {
   return `${r.scope}:${r.id}`;
-}
-
-function appendRecord(cwd: string, r: MemoryRecord) {
-  const rec = sanitizeRecordForStorage(r);
-  const dir = rec.scope === "user" ? paths(cwd).user : paths(cwd).project;
-  initializeDir(dir, rec.scope);
-  appendFileSync(join(dir, RECORDS), jsonLine(rec), "utf8");
-  regenerateSummary(cwd, rec.scope);
-  if (rec.scope === "project" || rec.kind === "preference" || rec.kind === "work_item") regenerateProjectContext(cwd);
-  return rec;
 }
 
 function recordMeaningfulSnapshot(r: MemoryRecord) {
@@ -693,12 +758,59 @@ function recordMeaningfulSnapshot(r: MemoryRecord) {
   });
 }
 
+function recordAffectsProjectContext(rec: MemoryRecord) {
+  return rec.scope === "project"
+    || rec.kind === "preference"
+    || rec.kind === "work_item"
+    || (rec.scope === "user" && (rec.kind === "decision" || rec.kind === "project_fact"));
+}
+
+type AppendRecordsBatchResult = { written: number; records: MemoryRecord[]; skipped: number };
+
+function appendRecordsBatch(cwd: string, records: MemoryRecord[], options: { skipUnchanged?: boolean } = {}): AppendRecordsBatchResult {
+  const skipUnchanged = options.skipUnchanged ?? true;
+  const latestByKey = new Map(latestRecordsForCwd(cwd).map((r) => [recordKey(r), r]));
+  const candidates = new Map<string, MemoryRecord>();
+  for (const r of records) {
+    const rec = sanitizeRecordForStorage(r);
+    const key = recordKey(rec);
+    if (skipUnchanged) {
+      const existing = candidates.get(key) ?? latestByKey.get(key);
+      if (existing && recordMeaningfulSnapshot(existing) === recordMeaningfulSnapshot(rec)) continue;
+    }
+    candidates.delete(key);
+    candidates.set(key, rec);
+  }
+
+  const toWrite = [...candidates.values()];
+  if (!toWrite.length) return { written: 0, records: [], skipped: records.length };
+
+  const p = paths(cwd);
+  const byScope: Record<MemoryScope, MemoryRecord[]> = { user: [], project: [] };
+  for (const rec of toWrite) byScope[rec.scope].push(rec);
+  const touchedScopes = new Set<MemoryScope>();
+  for (const scope of scopeEnum) {
+    const scoped = byScope[scope];
+    if (!scoped.length) continue;
+    const dir = scope === "user" ? p.user : p.project;
+    initializeDir(dir, scope);
+    appendFileSync(join(dir, RECORDS), scoped.map(jsonLine).join(""), "utf8");
+    touchedScopes.add(scope);
+  }
+
+  invalidateRecordsCache(cwd);
+  for (const scope of touchedScopes) regenerateSummary(cwd, scope);
+  if (toWrite.some(recordAffectsProjectContext)) regenerateProjectContext(cwd);
+  return { written: toWrite.length, records: toWrite, skipped: records.length - toWrite.length };
+}
+
+function appendRecord(cwd: string, r: MemoryRecord) {
+  const result = appendRecordsBatch(cwd, [r], { skipUnchanged: false });
+  return result.records[0] ?? sanitizeRecordForStorage(r);
+}
+
 function appendRecordIfChanged(cwd: string, r: MemoryRecord) {
-  const rec = sanitizeRecordForStorage(r);
-  const existing = latestRecords(allRecords(cwd)).find((x) => recordKey(x) === recordKey(rec));
-  if (existing && recordMeaningfulSnapshot(existing) === recordMeaningfulSnapshot(rec)) return false;
-  appendRecord(cwd, rec);
-  return true;
+  return appendRecordsBatch(cwd, [r]).written > 0;
 }
 
 type UpdateRecordResult = { updated?: MemoryRecord; ambiguous?: MemoryRecord[] };
@@ -721,7 +833,7 @@ function parseScopedId(rawId: string): { id: string; scope?: MemoryScope } {
 function updateRecord(cwd: string, rawId: string, patch: Partial<MemoryRecord>, scope?: MemoryScope): UpdateRecordResult {
   const parsed = parseScopedId(rawId);
   const wantedScope = scope ?? parsed.scope;
-  const matches = latestRecords(allRecords(cwd)).filter((r) => r.id === parsed.id && (!wantedScope || r.scope === wantedScope));
+  const matches = latestRecordsForCwd(cwd).filter((r) => r.id === parsed.id && (!wantedScope || r.scope === wantedScope));
   if (!matches.length) return {};
   if (matches.length > 1) return { ambiguous: matches };
   const existing = matches[0]!;
@@ -777,7 +889,7 @@ function createForgetTombstone(cwd: string, forgotten: MemoryRecord, note?: stri
     updatedAt: ts,
   };
   appendRecordIfChanged(cwd, rec);
-  return latestRecords(allRecords(cwd)).find((r) => recordKey(r) === recordKey(rec)) ?? rec;
+  return latestRecordsForCwd(cwd).find((r) => recordKey(r) === recordKey(rec)) ?? rec;
 }
 
 function formatForgetPreview(cwd: string, query: string, status: MemoryStatus) {
@@ -794,7 +906,7 @@ function formatForgetPreview(cwd: string, query: string, status: MemoryStatus) {
 function resolveRecord(cwd: string, rawId: string, scope?: MemoryScope): UpdateRecordResult {
   const parsed = parseScopedId(rawId);
   const wantedScope = scope ?? parsed.scope;
-  const matches = latestRecords(allRecords(cwd)).filter((r) => r.id === parsed.id && (!wantedScope || r.scope === wantedScope));
+  const matches = latestRecordsForCwd(cwd).filter((r) => r.id === parsed.id && (!wantedScope || r.scope === wantedScope));
   if (!matches.length) return {};
   if (matches.length > 1) return { ambiguous: matches };
   return { updated: matches[0] };
@@ -972,7 +1084,17 @@ function buildRepoMap(cwd: string): RepoMap {
 function readRepoMap(cwd: string): RepoMap | undefined {
   const file = join(projectMemoryDir(cwd), REPOMAP);
   if (!existsSync(file)) return undefined;
-  try { return JSON.parse(readFileSync(file, "utf8")) as RepoMap; } catch { return undefined; }
+  const stat = statSync(file);
+  const cached = repoMapFileCache.get(file);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.map;
+  try {
+    const map = JSON.parse(readFileSync(file, "utf8")) as RepoMap;
+    repoMapFileCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, map });
+    return map;
+  } catch {
+    repoMapFileCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, map: undefined });
+    return undefined;
+  }
 }
 
 
@@ -1000,10 +1122,10 @@ function repoMapStaleness(cwd: string, map = readRepoMap(cwd)): RepoMapStaleness
 
 function invalidateRepoMapStaleness(cwd: string) {
   repoStalenessCache.delete(findProjectRoot(cwd));
+  repoMapFileCache.delete(join(projectMemoryDir(cwd), REPOMAP));
 }
 
-function repoMapStalenessCached(cwd: string, ttlMs = REPO_STALENESS_CACHE_TTL_MS): RepoMapStaleness {
-  const map = readRepoMap(cwd);
+function repoMapStalenessCached(cwd: string, ttlMs = REPO_STALENESS_CACHE_TTL_MS, map = readRepoMap(cwd)): RepoMapStaleness {
   const key = findProjectRoot(cwd);
   const cached = repoStalenessCache.get(key);
   if (cached && cached.mapGeneratedAt === map?.generatedAt && Date.now() - cached.checkedAt < ttlMs) return cached.result;
@@ -1043,7 +1165,7 @@ function scopeMismatchReason(cwd: string, r: MemoryRecord): { suggestedScope: Me
   return undefined;
 }
 
-function scopeMismatchHints(cwd: string, records = activeRecords(latestRecords(allRecords(cwd)))): MemoryScopeHint[] {
+function scopeMismatchHints(cwd: string, records = activeRecords(latestRecordsForCwd(cwd))): MemoryScopeHint[] {
   return records
     .map((record) => ({ record, hint: scopeMismatchReason(cwd, record) }))
     .filter((x): x is { record: MemoryRecord; hint: { suggestedScope: MemoryScope; reason: string } } => Boolean(x.hint))
@@ -1057,7 +1179,7 @@ function duplicateSubjectHints(records: MemoryRecord[], limit = 8) {
 }
 
 function memoryStatsSnapshot(cwd: string) {
-  const records = latestRecords(allRecords(cwd));
+  const records = latestRecordsForCwd(cwd);
   const active = activeRecords(records);
   const byScope: Record<MemoryScope, number> = { user: 0, project: 0 };
   const activeByScope: Record<MemoryScope, number> = { user: 0, project: 0 };
@@ -1114,14 +1236,16 @@ function memoryHealth(cwd: string) {
 function regenerateProjectContext(cwd: string, map = readRepoMap(cwd)) {
   const dir = projectMemoryDir(cwd);
   initializeDir(dir, "project");
-  const records = activeRecords(latestRecords(allRecords(cwd)));
+  const records = activeRecords(latestRecordsForCwd(cwd));
   const project = records.filter((r) => r.scope === "project");
   const prefs = records.filter((r) => r.scope === "user" && r.kind === "preference").slice(0, 8);
+  const globalDecisions = records.filter((r) => r.scope === "user" && ["decision", "project_fact"].includes(r.kind)).slice(0, 8);
   const decisions = project.filter((r) => ["decision", "project_fact"].includes(r.kind));
   const work = records.filter((r) => r.kind === "work_item");
   const updatedAt = nowIso();
   const lines = ["# Hybrid Memory Working Context", "", `Updated: ${updatedAt}`, ""];
   if (prefs.length) { lines.push("## User preferences"); for (const r of prefs) lines.push(`- ${redactSecrets(r.content)}`); lines.push(""); }
+  if (globalDecisions.length) { lines.push("## Global decisions/facts"); for (const r of globalDecisions) lines.push(`- ${redactSecrets(r.content)}`); lines.push(""); }
   if (decisions.length) { lines.push("## Project decisions/facts"); for (const r of decisions) lines.push(`- ${redactSecrets(r.content)}`); lines.push(""); }
   if (work.length) { lines.push("## Active work"); for (const r of work) lines.push(`- ${r.id}: ${redactSecrets(r.content)}`); lines.push(""); }
   if (map) {
@@ -1155,19 +1279,38 @@ function regenerateProjectContext(cwd: string, map = readRepoMap(cwd)) {
   writeFileSync(join(dir, CONTEXT), lines.join("\n") + "\n", "utf8");
 }
 
-function repoExcerpt(cwd: string, query: string) {
-  const map = readRepoMap(cwd);
+function repoFileMatch(cwd: string, f: RepoMapFile, terms: string[], distinctiveTerms: string[], automatic: boolean) {
+  const searchable = [f.path, f.kind, ...f.symbols, ...f.imports, ...(f.commands ?? []), ...(f.tools ?? []), ...(f.hooks ?? []), ...(f.exports ?? [])].join(" ").toLowerCase();
+  const symbolish = [...f.symbols, ...(f.commands ?? []), ...(f.tools ?? []), ...(f.hooks ?? []), ...(f.exports ?? [])].map((x) => x.toLowerCase());
+  let score = 0;
+  let pathLikeMatch = false;
+  let exactSymbolMatch = false;
+  const distinctiveMatches = new Set<string>();
+  for (const t of terms) {
+    const variants = searchTermVariants(t);
+    const matched = variants.some((variant) => searchable.includes(variant));
+    if (!matched) continue;
+    const weight = t.includes("/") || t.includes(".") ? 5 : searchTermWeight(t);
+    score += Math.max(1, weight);
+    if (variants.some((variant) => /[./:_-]/.test(t) && f.path.toLowerCase().includes(variant))) pathLikeMatch = true;
+    if (variants.some((variant) => symbolish.some((s) => s === variant))) exactSymbolMatch = true;
+    if (distinctiveTerms.includes(t.replace(/^[@\-./:]+|[@\-./:]+$/g, ""))) distinctiveMatches.add(t);
+  }
+  if (!automatic) return { f, score, eligible: score > 0 };
+  const config = hybridMemoryConfig(cwd);
+  const eligible = score > 0 && (pathLikeMatch || exactSymbolMatch || distinctiveMatches.size >= config.repoMapAutoInjectMinDistinctiveTerms);
+  return { f, score, eligible };
+}
+
+function repoExcerpt(cwd: string, query: string, map = readRepoMap(cwd), automatic = false) {
   if (!map) return "";
-  const terms = tokenize(redactSecrets(query));
+  const safeQuery = redactSecrets(query);
+  const terms = [...new Set(tokenize(safeQuery).flatMap(searchTermVariants).filter((t) => searchTermWeight(t) > 0))];
+  const distinctiveTerms = distinctiveQueryTerms(safeQuery);
   const ranked = map.files
     .filter((f) => !isSensitivePath(f.path))
-    .map((f) => {
-      const h = [f.path, f.kind, ...f.symbols, ...f.imports, ...(f.commands ?? []), ...(f.tools ?? []), ...(f.hooks ?? [])].join(" ").toLowerCase();
-      let score = 0;
-      for (const t of terms) if (h.includes(t)) score += t.includes("/") ? 5 : 2;
-      return { f, score };
-    })
-    .filter((x) => x.score > 0)
+    .map((f) => repoFileMatch(cwd, f, terms, distinctiveTerms, automatic))
+    .filter((x) => x.eligible && x.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 8);
   if (!ranked.length) return "";
@@ -1259,8 +1402,8 @@ function looksLikeAgentArtifactPrompt(prompt: string) {
     || /(?:\b(?:pi-subagent|pi-subagents|chain-runs)\b|\[read from:|\[write to:)/i.test(text);
 }
 
-function durablePreferencePrompt(prompt: string) {
-  if (looksLikeAgentArtifactPrompt(prompt)) return false;
+function durablePreferencePrompt(prompt: string, mode: AutoCapturePreferenceMode = "explicit") {
+  if (mode === "off" || looksLikeAgentArtifactPrompt(prompt)) return false;
   const text = prompt.replace(/\s+/g, " ").trim();
   if (!text) return false;
   if (text.length > 1200 && !/^\s*(?:please\s+)?remember\b/i.test(text)) return false;
@@ -1274,18 +1417,20 @@ function durablePreferencePrompt(prompt: string) {
     || alwaysNeverDirective
     || /\bmy\s+preferences?\b/i.test(text)
     || /\bi\s+prefer\b/i.test(text)
-    || /\bprefer(?:red)?\s+(?:style|approach|format|workflow|way)\b/i.test(text)
+    || /\bprefer(?:red)?\s+(?:style|approach|format|workflow|way)\b/i.test(text);
+  const heuristicPreference = explicitPreference
     || /\bi\s+like\b/i.test(text)
     || /\bi\s+don['’]?t\s+want\b/i.test(text);
-  if (!explicitPreference) return false;
+  if (!(mode === "heuristic" ? heuristicPreference : explicitPreference)) return false;
   const looksLikeOneOffTask = /\b(?:fix|implement|debug|review|summari[sz]e|explain|generate|write|create|update|change)\b/i.test(text)
     && !/\b(?:remember|always|never|my\s+preferences?|i\s+prefer)\b/i.test(text);
   return !looksLikeOneOffTask;
 }
 
 function autoCapturePromptMemory(cwd: string, prompt: string) {
-  if (!durablePreferencePrompt(prompt)) return { written: 0 };
-  const content = compactText(redactSecrets(prompt), 240);
+  const config = hybridMemoryConfig(cwd);
+  if (!durablePreferencePrompt(prompt, config.autoCapturePreferences)) return { written: 0 };
+  const content = compactText(redactSecrets(prompt), config.autoCaptureMaxChars);
   if (content.length < 12 || content === SECRET_REPLACEMENT) return { written: 0 };
   const ts = nowIso();
   const rec: MemoryRecord = {
@@ -1601,16 +1746,13 @@ function extractSessionRecords(sessionFile: string, importCwd: string): MemoryRe
 
 function importSessions(cwd: string, sessionFiles: string[]) {
   let scanned = 0;
-  let written = 0;
   const records: MemoryRecord[] = [];
   for (const file of sessionFiles) {
     scanned++;
-    for (const rec of extractSessionRecords(file, cwd)) {
-      records.push(rec);
-      if (appendRecordIfChanged(cwd, rec)) written++;
-    }
+    records.push(...extractSessionRecords(file, cwd));
   }
-  return { scanned, extracted: records.length, written, sessionFiles };
+  const result = appendRecordsBatch(cwd, records);
+  return { scanned, extracted: records.length, written: result.written, sessionFiles };
 }
 
 function escapeRegex(text: string) {
@@ -1698,10 +1840,9 @@ function recordsFromSummary(cwd: string, summary: string, sourceType: "compactio
 
 function mineSummary(cwd: string, summary: string | undefined, sourceType: "compaction" | "branch_summary", evidence: Record<string, unknown>) {
   if (!summary) return { extracted: 0, written: 0 };
-  let written = 0;
   const records = recordsFromSummary(cwd, summary, sourceType, evidence);
-  for (const rec of records) if (appendRecordIfChanged(cwd, rec)) written++;
-  return { extracted: records.length, written };
+  const result = appendRecordsBatch(cwd, records);
+  return { extracted: records.length, written: result.written };
 }
 
 function noisyAutoPreferenceReason(r: MemoryRecord) {
@@ -1728,17 +1869,49 @@ function noisyRecipeReason(r: MemoryRecord) {
   return commands.length && !commands.some(isUsefulProjectCommand) ? "generic-command-recipe" : undefined;
 }
 
+function codebaseNoteFileEvidence(cwd: string, filePaths: string[] | undefined) {
+  const root = findProjectRoot(cwd);
+  return (sanitizeFilePaths(filePaths) ?? []).flatMap((file) => {
+    const abs = isAbsolute(file) ? file : join(root, file);
+    try {
+      if (!existsSync(abs)) return [];
+      const stat = statSync(abs);
+      if (!stat.isFile()) return [];
+      return [{ path: file, size: stat.size, mtimeMs: Math.round(stat.mtimeMs) }];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function storedCodebaseNoteFileEvidence(r: MemoryRecord) {
+  const files = Array.isArray(r.evidence?.files) ? r.evidence.files : [];
+  const out = new Map<string, { size?: number; mtimeMs?: number }>();
+  for (const item of files) {
+    if (!isPlainObject(item) || typeof item.path !== "string") continue;
+    out.set(item.path, {
+      size: typeof item.size === "number" ? item.size : undefined,
+      mtimeMs: typeof item.mtimeMs === "number" ? item.mtimeMs : undefined,
+    });
+  }
+  return out;
+}
+
 function staleCodebaseNoteReason(cwd: string, r: MemoryRecord) {
   if (r.kind !== "codebase_note" || r.pinned || !r.filePaths?.length) return undefined;
   if (!hybridMemoryConfig(cwd).staleCodebaseNotesOnFileChange) return undefined;
   const updated = Date.parse(r.updatedAt);
-  if (!Number.isFinite(updated)) return undefined;
   const root = findProjectRoot(cwd);
+  const evidence = storedCodebaseNoteFileEvidence(r);
   for (const file of sanitizeFilePaths(r.filePaths) ?? []) {
     const abs = isAbsolute(file) ? file : join(root, file);
     if (!existsSync(abs)) return `codebase-note-file-missing:${file}`;
     try {
-      if (statSync(abs).mtimeMs > updated + 1000) return `codebase-note-file-changed:${file}`;
+      const stat = statSync(abs);
+      const stored = evidence.get(file);
+      if (stored?.size !== undefined && stat.size !== stored.size) return `codebase-note-file-changed:${file}`;
+      const baselineMtime = stored?.mtimeMs ?? (Number.isFinite(updated) ? updated : undefined);
+      if (baselineMtime !== undefined && stat.mtimeMs > baselineMtime + 1000) return `codebase-note-file-changed:${file}`;
     } catch {
       return `codebase-note-file-unreadable:${file}`;
     }
@@ -1756,7 +1929,7 @@ function preferredMemoryKeeper(a: MemoryRecord, b: MemoryRecord) {
 }
 
 function memoryCurationCandidates(cwd: string, maxActiveSessionRecaps = 12): MemoryDoctorCandidate[] {
-  const active = activeRecords(latestRecords(allRecords(cwd)));
+  const active = activeRecords(latestRecordsForCwd(cwd));
   const candidates = new Map<string, MemoryDoctorCandidate>();
   const add = (record: MemoryRecord, reason: string) => {
     if (record.pinned) return;
@@ -1821,7 +1994,7 @@ function memoryCurationCandidates(cwd: string, maxActiveSessionRecaps = 12): Mem
 }
 
 function memoryDoctorPlan(cwd: string, maxActiveSessionRecaps = hybridMemoryConfig(cwd).pruneActiveSessionRecaps): MemoryDoctorPlan {
-  const active = activeRecords(latestRecords(allRecords(cwd)));
+  const active = activeRecords(latestRecordsForCwd(cwd));
   return {
     generatedAt: nowIso(),
     maxActiveSessionRecaps,
@@ -1833,16 +2006,26 @@ function memoryDoctorPlan(cwd: string, maxActiveSessionRecaps = hybridMemoryConf
 
 function applyMemoryDoctorPlan(cwd: string, plan: MemoryDoctorPlan): MemoryDoctorApplyResult {
   const result: MemoryDoctorApplyResult = { applied: 0, updated: [], skipped: [] };
+  const latest = new Map(latestRecordsForCwd(cwd).map((r) => [recordKey(r), r]));
+  const now = nowIso();
+  const updates: MemoryRecord[] = [];
   for (const candidate of plan.candidates) {
-    const update = updateRecord(cwd, candidate.record.id, { status: "stale", evidence: { doctorReason: candidate.reason, doctoredAt: nowIso() } }, candidate.record.scope);
-    if (update.updated) {
-      result.applied++;
-      result.updated.push(recordKey(update.updated));
-    } else {
+    const current = latest.get(recordKey(candidate.record));
+    if (!current || !isActiveRecord(current)) {
       result.skipped.push(`${recordKey(candidate.record)} (${candidate.reason})`);
+      continue;
     }
+    updates.push({
+      ...current,
+      status: "stale",
+      evidence: { ...(current.evidence ?? {}), doctorReason: candidate.reason, doctoredAt: now },
+      updatedAt: now,
+    });
   }
-  if (result.applied) regenerateProjectContext(cwd);
+  const written = appendRecordsBatch(cwd, updates);
+  result.applied = written.records.length;
+  result.updated.push(...written.records.map(recordKey));
+  for (const update of updates) if (!written.records.some((r) => recordKey(r) === recordKey(update))) result.skipped.push(`${recordKey(update)} (unchanged)`);
   return result;
 }
 
@@ -1905,7 +2088,7 @@ function writeMemoryDoctorReport(cwd: string, report: string, mode: "preview" | 
 }
 
 function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
-  const active = activeRecords(latestRecords(allRecords(cwd)));
+  const active = activeRecords(latestRecordsForCwd(cwd));
   const staleIds = new Set<string>();
   const staleReasons = new Map<string, string>();
   const markStale = (r: MemoryRecord, reason: string) => {
@@ -1969,18 +2152,24 @@ function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
     for (const r of recaps.slice(recapLimit(scope))) markStale(r, "old-session-recap");
   }
   const oldRecaps = projectRecaps.slice(maxActiveSessionRecaps).filter((r) => !staleReasonForMemory(cwd, r));
-  let staleMarked = 0;
+  const now = nowIso();
+  const activeByKey = new Map(active.map((r) => [recordKey(r), r]));
+  const updates: MemoryRecord[] = [];
   for (const key of staleIds) {
-    const { scope, id } = parseScopedId(key);
+    const existing = activeByKey.get(key);
+    if (!existing) continue;
     const reason = staleReasons.get(key) ?? "memory-prune";
-    const result = updateRecord(cwd, id, { status: "stale", evidence: { pruneReason: reason, prunedAt: nowIso() } }, scope);
-    if (result.updated) staleMarked++;
+    updates.push({
+      ...existing,
+      status: "stale",
+      evidence: { ...(existing.evidence ?? {}), pruneReason: reason, prunedAt: now },
+      updatedAt: now,
+    });
   }
   let rollupCreated: MemoryRecord | undefined;
   if (oldRecaps.length >= 3) {
-    const ts = nowIso();
     const content = `Rolled up ${oldRecaps.length} older project session recaps. Recent themes: ${oldRecaps.slice(0, 8).map((r) => compactText(r.content, 120)).join(" | ")}`;
-    rollupCreated = appendRecord(cwd, {
+    rollupCreated = {
       id: stableId("session_recap", "rolled up older project sessions", oldRecaps.map(recordKey).join("|")),
       schemaVersion: 1,
       scope: "project",
@@ -1991,11 +2180,16 @@ function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResult {
       filePaths: [...new Set(oldRecaps.flatMap((r) => r.filePaths ?? []))].slice(0, 16),
       status: "active",
       salience: 2,
-      evidence: { rolledUp: oldRecaps.map(recordKey), prunedAt: ts },
-      createdAt: ts,
-      updatedAt: ts,
-    });
+      evidence: { rolledUp: oldRecaps.map(recordKey), prunedAt: now },
+      createdAt: now,
+      updatedAt: now,
+    };
+    updates.push(rollupCreated);
   }
+  const result = appendRecordsBatch(cwd, updates);
+  const writtenKeys = new Set(result.records.map(recordKey));
+  if (rollupCreated && !writtenKeys.has(recordKey(rollupCreated))) rollupCreated = undefined;
+  const staleMarked = result.records.filter((r) => r.status === "stale").length;
   return { staleMarked, rollupCreated, duplicateGroups };
 }
 
@@ -2126,7 +2320,7 @@ function clip(text: string, width: number) {
 }
 
 function activeCounts(cwd: string) {
-  const records = latestRecords(allRecords(cwd));
+  const records = latestRecordsForCwd(cwd);
   const active = activeRecords(records);
   const project = active.filter((r) => r.scope === "project").length;
   const user = active.filter((r) => r.scope === "user").length;
@@ -2455,6 +2649,33 @@ function memoryLine(cwd: string, r: MemoryRecord) {
   return `${r.pinned ? "📌 " : ""}${content}${fileSuffix}`;
 }
 
+function injectionLength(lines: string[]) {
+  return lines.join("\n").trim().length;
+}
+
+function canFitInjectionLines(lines: string[], additions: string[], maxChars: number) {
+  return injectionLength([...lines, ...additions]) <= maxChars;
+}
+
+function appendInjectionSection(lines: string[], title: string, itemLines: string[], maxChars: number, sectionLimit: number) {
+  if (sectionLimit <= 0 || !itemLines.length) return false;
+  const section = [`## ${title}`];
+  let added = 0;
+  let truncated = itemLines.length > sectionLimit;
+  for (const line of itemLines.slice(0, sectionLimit)) {
+    if (!canFitInjectionLines(lines, [...section, line, ""], maxChars - 24)) {
+      truncated = true;
+      break;
+    }
+    section.push(line);
+    added++;
+  }
+  if (!added) return false;
+  if (truncated && canFitInjectionLines(lines, [...section, "- …truncated", ""], maxChars)) section.push("- …truncated");
+  lines.push(...section, "");
+  return true;
+}
+
 function buildInjection(cwd: string, prompt: string) {
   const config = hybridMemoryConfig(cwd);
   const safePrompt = redactSecrets(prompt);
@@ -2464,6 +2685,7 @@ function buildInjection(cwd: string, prompt: string) {
   const results = [...merged.values()];
   const sections: Array<[string, MemoryRecord[]]> = [
     ["User Preferences", results.filter((r) => r.scope === "user" && r.kind === "preference")],
+    ["Global Decisions/Facts", results.filter((r) => r.scope === "user" && ["decision", "project_fact"].includes(r.kind))],
     ["Project Decisions", results.filter((r) => r.scope === "project" && ["decision", "project_fact"].includes(r.kind))],
     ["Active Work", results.filter((r) => r.kind === "work_item" && (r.status ?? "active") === "active")],
     ["Recipes", results.filter((r) => r.kind === "recipe")],
@@ -2479,28 +2701,20 @@ function buildInjection(cwd: string, prompt: string) {
   let any = false;
   for (const [title, arr] of sections) {
     const polished = dedupeInjectionRecords(arr);
-    if (!polished.length) continue;
-    const sectionLimit = config.injectSectionLimits[title] ?? 4;
-    if (sectionLimit <= 0) continue;
-    any = true;
-    lines.push(`## ${title}`);
-    for (const r of polished.slice(0, sectionLimit)) lines.push(`- ${memoryLine(cwd, r)}`);
-    lines.push("");
+    const itemLines = polished.map((r) => `- ${memoryLine(cwd, r)}`);
+    if (appendInjectionSection(lines, title, itemLines, config.maxInjectChars, config.injectSectionLimits[title] ?? 4)) any = true;
   }
   const repoMap = readRepoMap(cwd);
-  const stale = repoMapStalenessCached(cwd);
+  const stale = repoMapStalenessCached(cwd, REPO_STALENESS_CACHE_TTL_MS, repoMap);
   if (stale.stale && repoMap) {
-    any = true;
-    lines.push("## Repo Map Status", `- stale: ${stale.reason}; run /hmemory-repomap or hybrid_memory_build_repomap after code changes.`, "");
+    any = appendInjectionSection(lines, "Repo Map Status", [`- stale: ${stale.reason}; run /hmemory-repomap or hybrid_memory_build_repomap after code changes.`], config.maxInjectChars, 1) || any;
   }
-  const repo = repoExcerpt(cwd, safePrompt);
+  const repo = repoExcerpt(cwd, safePrompt, repoMap, true);
   if (repo) {
-    any = true;
-    lines.push("## Repo Map Matches", repo, "");
+    any = appendInjectionSection(lines, "Repo Map Matches", repo.split("\n"), config.maxInjectChars, 8) || any;
   }
   if (!any) return "";
-  let text = lines.join("\n").trim();
-  if (text.length > config.maxInjectChars) text = text.slice(0, config.maxInjectChars) + "\n- …truncated";
+  const text = lines.join("\n").trim();
   return `\n\n<hybrid_memory>\n${text}\n</hybrid_memory>`;
 }
 
@@ -2659,6 +2873,77 @@ function createMemoryAuditProgress(tui: any, theme: any, model: string, query?: 
   };
 }
 
+type PurgeMemoryResult = { id: string; scope?: MemoryScope; removed: number; auditPath?: string; ambiguous?: MemoryRecord[] };
+
+function parseMemoryPurgeArgs(args: string) {
+  const tokens = args.match(/(?:"[^"]*"|'[^']*'|\S+)/g)?.map(cleanArgToken) ?? [];
+  let force = false;
+  let scope: MemoryScope | undefined;
+  const id: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (/^(?:--?force|force)$/i.test(token)) force = true;
+    else if (token.startsWith("--scope")) {
+      const value = token.includes("=") ? token.split("=")[1] : tokens[++i];
+      if (scopeEnum.includes(value as MemoryScope)) scope = value as MemoryScope;
+    } else {
+      id.push(token);
+    }
+  }
+  return { id: id.join(" ").trim(), scope, force };
+}
+
+function writeMemoryPurgeAudit(cwd: string, result: PurgeMemoryResult) {
+  const dir = join(projectMemoryDir(cwd), AUDITS);
+  ensureDir(dir);
+  const file = join(dir, `${nowIso().replace(/[:.]/g, "-")}-hmemory-purge.md`);
+  writeFileSync(file, [
+    "<!-- Generated by pi-hybrid-memory /hmemory-purge. Purged content is intentionally not logged. -->",
+    `Generated: ${nowIso()}`,
+    `Purged: ${result.scope}:${result.id}`,
+    `Removed JSONL entries: ${result.removed}`,
+    "",
+    "No purged record content was written to this audit marker.",
+  ].join("\n") + "\n", "utf8");
+  return file;
+}
+
+function purgeMemoryRecord(cwd: string, rawId: string, scope?: MemoryScope): PurgeMemoryResult {
+  const parsed = parseScopedId(rawId);
+  const wantedScope = scope ?? parsed.scope;
+  const resolved = resolveRecord(cwd, parsed.id, wantedScope);
+  if (resolved.ambiguous?.length) return { id: parsed.id, scope: wantedScope, removed: 0, ambiguous: resolved.ambiguous };
+  if (!resolved.updated) return { id: parsed.id, scope: wantedScope, removed: 0 };
+  const targetScope = resolved.updated.scope;
+  const dir = targetScope === "user" ? paths(cwd).user : paths(cwd).project;
+  initializeDir(dir, targetScope);
+  const file = join(dir, RECORDS);
+  const kept: string[] = [];
+  let removed = 0;
+  for (const line of readFileSync(file, "utf8").split(/\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const rec = normalizeMemoryRecord(JSON.parse(line));
+      if (rec && rec.id === parsed.id && rec.scope === targetScope) {
+        removed++;
+        continue;
+      }
+    } catch {
+      // Preserve hand-edited/unparseable lines; purge only records we can safely identify.
+    }
+    kept.push(line);
+  }
+  if (!removed) return { id: parsed.id, scope: targetScope, removed: 0 };
+  writeFileSync(file, kept.length ? `${kept.join("\n")}\n` : "", "utf8");
+  invalidateRecordsCache(cwd);
+  regenerateSummary(cwd, targetScope);
+  regenerateProjectContext(cwd);
+  const result: PurgeMemoryResult = { id: parsed.id, scope: targetScope, removed };
+  result.auditPath = writeMemoryPurgeAudit(cwd, result);
+  updateProjectState(cwd, { lastPurgeAt: nowIso(), lastPurgedRecord: `${targetScope}:${parsed.id}`, lastPurgeRemoved: removed, lastPurgeAuditPath: result.auditPath });
+  return result;
+}
+
 function parseMemoryAuditArgs(args: string) {
   const tokens = args.match(/(?:"[^"]*"|'[^']*'|\S+)/g) ?? [];
   let apply = false;
@@ -2756,7 +3041,7 @@ function recordAuditBlock(cwd: string, r: MemoryRecord) {
 
 function auditRecords(cwd: string, query?: string, limit = AUDIT_RECORD_LIMIT) {
   if (query) return searchRecords(cwd, query, limit).map((h) => h.record);
-  return activeRecords(latestRecords(allRecords(cwd)))
+  return activeRecords(latestRecordsForCwd(cwd))
     .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.salience - a.salience || b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, limit);
 }
@@ -3111,8 +3396,11 @@ async function generateMemoryAudit(cwd: string, ctx: any, query?: string, signal
   const plan = parseMemoryAuditPlan(body);
   onProgress?.({ stage: "report", recordsAudited, omittedRecords, actions: plan.actions.length, detail: `Model proposed ${plan.actions.length} validated action${plan.actions.length === 1 ? "" : "s"}; writing the audit report.` });
   const report = formatMemoryAuditReport({ plan, model, query, recordsAudited, omittedRecords });
-  const reportPath = writeMemoryAuditReport(cwd, report);
-  updateProjectState(cwd, { lastAuditAt: nowIso(), lastAuditModel: model, lastAuditPath: reportPath, lastAuditRecords: recordsAudited, lastAuditActions: plan.actions.length });
+  let reportPath = "";
+  await withHybridMemoryMutation(cwd, async () => {
+    reportPath = writeMemoryAuditReport(cwd, report);
+    updateProjectState(cwd, { lastAuditAt: nowIso(), lastAuditModel: model, lastAuditPath: reportPath, lastAuditRecords: recordsAudited, lastAuditActions: plan.actions.length });
+  });
   onProgress?.({ stage: "done", recordsAudited, omittedRecords, actions: plan.actions.length, reportPath, detail: "Plan is ready. Next step: preview or apply append-only memory changes." });
   return { reportPath, report, model, recordsAudited, omittedRecords, query, plan };
 }
@@ -3136,18 +3424,20 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     clearRemovedWidget(ctx);
-    const p = paths(ctx.cwd);
-    initializeDir(p.user, "user");
-    initializeDir(p.project, "project");
     try {
-      const result = cheapStartupRefresh(ctx.cwd, ctx.sessionManager.getSessionFile?.());
-      if (result.builtMap || result.sessions.written) {
-        ctx.ui.notify(`hybrid memory startup: ${result.builtMap ? `repo map ${result.repoFiles} files; ` : ""}sessions scanned ${result.sessions.scanned}, wrote ${result.sessions.written}`, "info");
-      } else if (result.skippedRepoMap) {
-        ctx.ui.notify("hybrid memory: repo map missing/stale; run /hmemory-refresh or /hmemory-bootstrap when ready", "info");
-      }
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const p = paths(ctx.cwd);
+        initializeDir(p.user, "user");
+        initializeDir(p.project, "project");
+        const result = cheapStartupRefresh(ctx.cwd, ctx.sessionManager.getSessionFile?.());
+        if (result.builtMap || result.sessions.written) {
+          ctx.ui.notify(`hybrid memory startup: ${result.builtMap ? `repo map ${result.repoFiles} files; ` : ""}sessions scanned ${result.sessions.scanned}, wrote ${result.sessions.written}`, "info");
+        } else if (result.skippedRepoMap) {
+          ctx.ui.notify("hybrid memory: repo map missing/stale; run /hmemory-refresh or /hmemory-bootstrap when ready", "info");
+        }
+      });
     } catch (err) {
-      regenerateProjectContext(ctx.cwd);
+      await withHybridMemoryMutation(ctx.cwd, async () => regenerateProjectContext(ctx.cwd));
       ctx.ui.notify(`hybrid memory startup skipped: ${err instanceof Error ? err.message : String(err)}`, "info");
     }
     updateMemoryChrome(ctx);
@@ -3159,9 +3449,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_compact", async (event: any, ctx) => {
     const entry = event.compactionEntry ?? event.entry ?? event.compaction;
-    const result = mineSummary(ctx.cwd, entry?.summary, "compaction", { entryId: entry?.id, firstKeptEntryId: entry?.firstKeptEntryId, tokensBefore: entry?.tokensBefore });
+    const result = await withHybridMemoryMutation(ctx.cwd, async () => mineSummary(ctx.cwd, entry?.summary, "compaction", { entryId: entry?.id, firstKeptEntryId: entry?.firstKeptEntryId, tokensBefore: entry?.tokensBefore }));
     if (result.written) {
-      regenerateProjectContext(ctx.cwd);
       updateMemoryChrome(ctx);
       ctx.ui.notify(`hybrid memory mined compaction: ${result.written}/${result.extracted} records`, "info");
     }
@@ -3169,16 +3458,15 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_tree", async (event: any, ctx) => {
     const entry = event.summaryEntry ?? event.branchSummaryEntry ?? event.summary;
-    const result = mineSummary(ctx.cwd, entry?.summary, "branch_summary", { entryId: entry?.id, fromId: entry?.fromId, newLeafId: event.newLeafId, oldLeafId: event.oldLeafId });
+    const result = await withHybridMemoryMutation(ctx.cwd, async () => mineSummary(ctx.cwd, entry?.summary, "branch_summary", { entryId: entry?.id, fromId: entry?.fromId, newLeafId: event.newLeafId, oldLeafId: event.oldLeafId }));
     if (result.written) {
-      regenerateProjectContext(ctx.cwd);
       updateMemoryChrome(ctx);
       ctx.ui.notify(`hybrid memory mined branch summary: ${result.written}/${result.extracted} records`, "info");
     }
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    const capture = autoCapturePromptMemory(ctx.cwd, event.prompt);
+    const capture = await withHybridMemoryMutation(ctx.cwd, async () => autoCapturePromptMemory(ctx.cwd, event.prompt));
     if (capture.written) updateMemoryChrome(ctx);
     const block = buildInjection(ctx.cwd, event.prompt);
     if (!block) return;
@@ -3186,7 +3474,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    const result = autoImportCurrentSession(ctx.cwd, ctx.sessionManager.getSessionFile?.());
+    const result = await withHybridMemoryMutation(ctx.cwd, async () => autoImportCurrentSession(ctx.cwd, ctx.sessionManager.getSessionFile?.()));
     if (result.written) updateMemoryChrome(ctx);
   });
 
@@ -3218,11 +3506,28 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       ctx.ui.setStatus("hybrid-memory", "map");
       try {
-        const map = buildRepoMap(ctx.cwd);
-        ctx.ui.notify(`repo map: ${map.files.length} files -> ${join(projectMemoryDir(ctx.cwd), REPOMAP)}`, "success");
+        await withHybridMemoryMutation(ctx.cwd, async () => {
+          const map = buildRepoMap(ctx.cwd);
+          ctx.ui.notify(`repo map: ${map.files.length} files -> ${join(projectMemoryDir(ctx.cwd), REPOMAP)}`, "success");
+        });
       } finally {
         updateMemoryChrome(ctx);
       }
+    },
+  });
+
+  pi.registerCommand("hmemory-purge", {
+    description: "Hard-delete all JSONL versions of one memory: /hmemory-purge <scoped-id> --force",
+    handler: async (args, ctx) => {
+      const parsed = parseMemoryPurgeArgs(args);
+      if (!parsed.id || !parsed.force) return ctx.ui.notify("Usage: /hmemory-purge <scoped-id> --force [--scope user|project]. This rewrites records.jsonl and does not log purged content.", "error");
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const result = purgeMemoryRecord(ctx.cwd, parsed.id, parsed.scope);
+        if (result.ambiguous?.length) return ctx.ui.notify(`Ambiguous memory id ${parsed.id}; use ${result.ambiguous.map(recordKey).join(" or ")}.`, "error");
+        if (!result.removed) return ctx.ui.notify(`No record found for ${parsed.id}; nothing purged.`, "info");
+        ctx.ui.notify(`purged ${result.scope}:${result.id}: removed ${result.removed} JSONL entr${result.removed === 1 ? "y" : "ies"}. Audit marker: ${result.auditPath}`, "success");
+      });
+      updateMemoryChrome(ctx);
     },
   });
 
@@ -3234,12 +3539,15 @@ export default function (pi: ExtensionAPI) {
       const status = statusEnum.includes(statusArg as MemoryStatus) ? statusArg as MemoryStatus : "stale";
       const target = (statusArg && statusEnum.includes(statusArg as MemoryStatus) ? tokens.slice(0, -1) : tokens).join(" ").trim();
       if (!target) return ctx.ui.notify("Usage: /hmemory-forget <id|query> [stale|done|superseded]", "error");
-      const result = updateRecord(ctx.cwd, target, { status });
-      if (result.updated || result.ambiguous?.length) {
-        ctx.ui.notify(forgetResultText(result, target, status), result.updated ? "success" : "error");
-        return;
-      }
-      ctx.ui.notify(formatForgetPreview(ctx.cwd, target, status), "info");
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const result = updateRecord(ctx.cwd, target, { status });
+        if (result.updated || result.ambiguous?.length) {
+          ctx.ui.notify(forgetResultText(result, target, status), result.updated ? "success" : "error");
+          return;
+        }
+        ctx.ui.notify(formatForgetPreview(ctx.cwd, target, status), "info");
+      });
+      updateMemoryChrome(ctx);
     },
   });
 
@@ -3248,19 +3556,21 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       ctx.ui.setStatus("hybrid-memory", "ingest");
       try {
-        const trimmed = args.trim();
-        let files: string[] = [];
-        if (!trimmed || trimmed === "current") {
-          const current = ctx.sessionManager.getSessionFile();
-          if (current) files = [current];
-        } else if (trimmed.startsWith("recent")) {
-          const n = boundedNumber(trimmed.split(/\s+/)[1], 10, 1, 50);
-          files = listSessionFiles(n, ctx.cwd);
-        } else {
-          files = [resolve(trimmed.replace(/^~/, homedir()))];
-        }
-        const result = importSessions(ctx.cwd, files.filter((f) => existsSync(f)));
-        ctx.ui.notify(`session import: scanned ${result.scanned}, extracted ${result.extracted}, wrote ${result.written}`, "success");
+        await withHybridMemoryMutation(ctx.cwd, async () => {
+          const trimmed = args.trim();
+          let files: string[] = [];
+          if (!trimmed || trimmed === "current") {
+            const current = ctx.sessionManager.getSessionFile();
+            if (current) files = [current];
+          } else if (trimmed.startsWith("recent")) {
+            const n = boundedNumber(trimmed.split(/\s+/)[1], 10, 1, 50);
+            files = listSessionFiles(n, ctx.cwd);
+          } else {
+            files = [resolve(trimmed.replace(/^~/, homedir()))];
+          }
+          const result = importSessions(ctx.cwd, files.filter((f) => existsSync(f)));
+          ctx.ui.notify(`session import: scanned ${result.scanned}, extracted ${result.extracted}, wrote ${result.written}`, "success");
+        });
       } finally {
         updateMemoryChrome(ctx);
       }
@@ -3273,13 +3583,15 @@ export default function (pi: ExtensionAPI) {
       const recent = boundedNumber(args.trim(), 5, 0, 50);
       ctx.ui.setStatus("hybrid-memory", "refresh");
       try {
-        const map = buildRepoMap(ctx.cwd);
-        const current = ctx.sessionManager.getSessionFile();
-        const files = [...new Set([...(current ? [current] : []), ...listSessionFiles(recent, ctx.cwd)])];
-        const result = importSessions(ctx.cwd, files);
-        regenerateProjectContext(ctx.cwd, map);
-        updateProjectState(ctx.cwd, { lastManualRefreshAt: nowIso(), lastManualRefreshSessionsScanned: result.scanned, lastManualRefreshSessionsWritten: result.written });
-        ctx.ui.notify(`refresh: repo map ${map.files.length} files; sessions scanned ${result.scanned}, extracted ${result.extracted}, wrote ${result.written}`, "success");
+        await withHybridMemoryMutation(ctx.cwd, async () => {
+          const map = buildRepoMap(ctx.cwd);
+          const current = ctx.sessionManager.getSessionFile();
+          const files = [...new Set([...(current ? [current] : []), ...listSessionFiles(recent, ctx.cwd)])];
+          const result = importSessions(ctx.cwd, files);
+          regenerateProjectContext(ctx.cwd, map);
+          updateProjectState(ctx.cwd, { lastManualRefreshAt: nowIso(), lastManualRefreshSessionsScanned: result.scanned, lastManualRefreshSessionsWritten: result.written });
+          ctx.ui.notify(`refresh: repo map ${map.files.length} files; sessions scanned ${result.scanned}, extracted ${result.extracted}, wrote ${result.written}`, "success");
+        });
       } finally {
         updateMemoryChrome(ctx);
       }
@@ -3292,8 +3604,10 @@ export default function (pi: ExtensionAPI) {
       const max = boundedNumber(args.trim(), 250, 10, 500);
       ctx.ui.setStatus("hybrid-memory", "bootstrap");
       try {
-        const result = bootstrapProjectMemory(ctx.cwd, max);
-        ctx.ui.notify(`bootstrap: repo map ${result.repoFiles} files; sessions scanned ${result.sessions.scanned}/${result.scannedAvailable}, extracted ${result.sessions.extracted}, wrote ${result.sessions.written}; pruned ${result.prune.staleMarked}${result.prune.rollupCreated ? `; rollup ${recordKey(result.prune.rollupCreated)}` : ""}`, "success");
+        await withHybridMemoryMutation(ctx.cwd, async () => {
+          const result = bootstrapProjectMemory(ctx.cwd, max);
+          ctx.ui.notify(`bootstrap: repo map ${result.repoFiles} files; sessions scanned ${result.sessions.scanned}/${result.scannedAvailable}, extracted ${result.sessions.extracted}, wrote ${result.sessions.written}; pruned ${result.prune.staleMarked}${result.prune.rollupCreated ? `; rollup ${recordKey(result.prune.rollupCreated)}` : ""}`, "success");
+        });
       } finally {
         updateMemoryChrome(ctx);
       }
@@ -3312,23 +3626,25 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("hmemory-doctor", {
     description: "Preview/apply deterministic memory cleanup and write a curation report: /hmemory-doctor [preview|apply] [maxRecaps]",
     handler: async (args, ctx) => {
-      const parsed = parseMemoryDoctorArgs(args);
-      const max = parsed.maxActiveSessionRecaps ?? hybridMemoryConfig(ctx.cwd).pruneActiveSessionRecaps;
-      const plan = memoryDoctorPlan(ctx.cwd, max);
-      let applyResult: MemoryDoctorApplyResult | undefined;
-      let after: MemoryStatsSnapshot | undefined;
-      if (parsed.mode === "apply") {
-        applyResult = applyMemoryDoctorPlan(ctx.cwd, plan);
-        after = memoryStatsSnapshot(ctx.cwd);
-        updateProjectState(ctx.cwd, { lastDoctorAppliedAt: nowIso(), lastDoctorApplied: applyResult.applied, lastDoctorSkipped: applyResult.skipped.length });
-        updateMemoryChrome(ctx);
-      }
-      const report = formatMemoryDoctorReport({ plan, applyResult, after });
-      const reportPath = writeMemoryDoctorReport(ctx.cwd, report, parsed.mode);
-      updateProjectState(ctx.cwd, { lastDoctorAt: nowIso(), lastDoctorPath: reportPath, lastDoctorCandidates: plan.candidates.length, lastDoctorScopeHints: plan.scopeHints.length });
-      const noun = plan.candidates.length === 1 ? "candidate" : "candidates";
-      const scopeNoun = plan.scopeHints.length === 1 ? "hint" : "hints";
-      ctx.ui.notify(`memory doctor ${parsed.mode}: ${plan.candidates.length} safe cleanup ${noun}; ${plan.scopeHints.length} scope ${scopeNoun}${applyResult ? `; applied ${applyResult.applied}` : ""}; report ${reportPath}`, parsed.mode === "apply" && applyResult?.applied ? "success" : "info");
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const parsed = parseMemoryDoctorArgs(args);
+        const max = parsed.maxActiveSessionRecaps ?? hybridMemoryConfig(ctx.cwd).pruneActiveSessionRecaps;
+        const plan = memoryDoctorPlan(ctx.cwd, max);
+        let applyResult: MemoryDoctorApplyResult | undefined;
+        let after: MemoryStatsSnapshot | undefined;
+        if (parsed.mode === "apply") {
+          applyResult = applyMemoryDoctorPlan(ctx.cwd, plan);
+          after = memoryStatsSnapshot(ctx.cwd);
+          updateProjectState(ctx.cwd, { lastDoctorAppliedAt: nowIso(), lastDoctorApplied: applyResult.applied, lastDoctorSkipped: applyResult.skipped.length });
+        }
+        const report = formatMemoryDoctorReport({ plan, applyResult, after });
+        const reportPath = writeMemoryDoctorReport(ctx.cwd, report, parsed.mode);
+        updateProjectState(ctx.cwd, { lastDoctorAt: nowIso(), lastDoctorPath: reportPath, lastDoctorCandidates: plan.candidates.length, lastDoctorScopeHints: plan.scopeHints.length });
+        const noun = plan.candidates.length === 1 ? "candidate" : "candidates";
+        const scopeNoun = plan.scopeHints.length === 1 ? "hint" : "hints";
+        ctx.ui.notify(`memory doctor ${parsed.mode}: ${plan.candidates.length} safe cleanup ${noun}; ${plan.scopeHints.length} scope ${scopeNoun}${applyResult ? `; applied ${applyResult.applied}` : ""}; report ${reportPath}`, parsed.mode === "apply" && applyResult?.applied ? "success" : "info");
+      });
+      updateMemoryChrome(ctx);
     },
   });
 
@@ -3345,10 +3661,12 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("hmemory-prune", {
     description: "Prune duplicate/old session-recapped memories; optional max active recaps: /hmemory-prune [12] or configured default",
     handler: async (args, ctx) => {
-      const max = boundedNumber(args.trim(), hybridMemoryConfig(ctx.cwd).pruneActiveSessionRecaps, 3, 100);
-      const result = pruneMemory(ctx.cwd, max);
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const max = boundedNumber(args.trim(), hybridMemoryConfig(ctx.cwd).pruneActiveSessionRecaps, 3, 100);
+        const result = pruneMemory(ctx.cwd, max);
+        ctx.ui.notify(`memory prune: marked ${result.staleMarked} stale; duplicate groups ${result.duplicateGroups}${result.rollupCreated ? `; rollup ${recordKey(result.rollupCreated)}` : ""}`, "success");
+      });
       updateMemoryChrome(ctx);
-      ctx.ui.notify(`memory prune: marked ${result.staleMarked} stale; duplicate groups ${result.duplicateGroups}${result.rollupCreated ? `; rollup ${recordKey(result.rollupCreated)}` : ""}`, "success");
     },
   });
 
@@ -3391,12 +3709,14 @@ export default function (pi: ExtensionAPI) {
         }
 
         if (shouldApply && actionCount > 0) {
-          const applyResult = applyMemoryAuditPlan(ctx.cwd, audit.plan);
-          const report = formatMemoryAuditReport({ plan: audit.plan, model: audit.model, query: audit.query, recordsAudited: audit.recordsAudited, omittedRecords: audit.omittedRecords, applyResult });
-          writeFileSync(audit.reportPath, report.trim() + "\n", "utf8");
-          updateProjectState(ctx.cwd, { lastAuditAppliedAt: nowIso(), lastAuditApplied: applyResult.applied, lastAuditSkipped: applyResult.skipped.length });
-          updateMemoryChrome(ctx);
-          ctx.ui.notify(`memory audit applied ${applyResult.applied} change${applyResult.applied === 1 ? "" : "s"}; skipped ${applyResult.skipped.length}; report ${audit.reportPath}`, applyResult.applied ? "success" : "info");
+          await withHybridMemoryMutation(ctx.cwd, async () => {
+            const applyResult = applyMemoryAuditPlan(ctx.cwd, audit.plan);
+            const report = formatMemoryAuditReport({ plan: audit.plan, model: audit.model, query: audit.query, recordsAudited: audit.recordsAudited, omittedRecords: audit.omittedRecords, applyResult });
+            writeFileSync(audit.reportPath, report.trim() + "\n", "utf8");
+            updateProjectState(ctx.cwd, { lastAuditAppliedAt: nowIso(), lastAuditApplied: applyResult.applied, lastAuditSkipped: applyResult.skipped.length });
+            updateMemoryChrome(ctx);
+            ctx.ui.notify(`memory audit applied ${applyResult.applied} change${applyResult.applied === 1 ? "" : "s"}; skipped ${applyResult.skipped.length}; report ${audit.reportPath}`, applyResult.applied ? "success" : "info");
+          });
         } else {
           ctx.ui.notify(`memory audit proposed ${actionCount} change${actionCount === 1 ? "" : "s"}; report ${audit.reportPath}${options.dryRun ? " (preview only)" : ""}`, "info");
         }
@@ -3412,7 +3732,7 @@ export default function (pi: ExtensionAPI) {
     description: "Review active memories in a compact TUI overlay",
     handler: async (_args, ctx) => {
       let selected = 0;
-      const load = () => activeRecords(latestRecords(allRecords(ctx.cwd)))
+      const load = () => activeRecords(latestRecordsForCwd(ctx.cwd))
         .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.salience - a.salience || b.updatedAt.localeCompare(a.updatedAt));
       let records = load();
       await ctx.ui.custom((tui, theme, _kb, done) => ({
@@ -3422,10 +3742,19 @@ export default function (pi: ExtensionAPI) {
           if (data === "q" || data === "Q" || data === "\x1b") return done(undefined);
           if (data === "j" || data === "\x1b[B") selected = Math.min(records.length - 1, selected + 1);
           else if (data === "k" || data === "\x1b[A") selected = Math.max(0, selected - 1);
-          else if (records[selected] && data === "p") updateRecord(ctx.cwd, records[selected]!.id, { pinned: true }, records[selected]!.scope);
-          else if (records[selected] && data === "u") updateRecord(ctx.cwd, records[selected]!.id, { pinned: false }, records[selected]!.scope);
-          else if (records[selected] && data === "s") updateRecord(ctx.cwd, records[selected]!.id, { status: "stale" }, records[selected]!.scope);
-          else if (records[selected] && data === "d") updateRecord(ctx.cwd, records[selected]!.id, { status: "done" }, records[selected]!.scope);
+          else if (records[selected] && ["p", "u", "s", "d"].includes(data)) {
+            const rec = records[selected]!;
+            const patch: Partial<MemoryRecord> = data === "p" ? { pinned: true } : data === "u" ? { pinned: false } : data === "s" ? { status: "stale" } : { status: "done" };
+            void withHybridMemoryMutation(ctx.cwd, async () => updateRecord(ctx.cwd, rec.id, patch, rec.scope))
+              .catch((err) => ctx.ui.notify(`memory review update failed: ${err instanceof Error ? err.message : String(err)}`, "error"))
+              .finally(() => {
+                records = load();
+                selected = Math.max(0, Math.min(selected, records.length - 1));
+                updateMemoryChrome(ctx);
+                tui.requestRender();
+              });
+            return;
+          }
           records = load();
           selected = Math.max(0, Math.min(selected, records.length - 1));
           updateMemoryChrome(ctx);
@@ -3450,7 +3779,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("hmemory-context", {
     description: "Regenerate/show the compact working context file",
     handler: async (_args, ctx) => {
-      regenerateProjectContext(ctx.cwd);
+      await withHybridMemoryMutation(ctx.cwd, async () => regenerateProjectContext(ctx.cwd));
+      updateMemoryChrome(ctx);
       ctx.ui.notify(`working context: ${join(projectMemoryDir(ctx.cwd), CONTEXT)}`, "success");
     },
   });
@@ -3460,10 +3790,13 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const content = args.trim();
       if (!content) return ctx.ui.notify("Usage: /hmemory-work <description>", "error");
-      const ts = nowIso();
-      const rec: MemoryRecord = { id: safeId("work_item", redactSecrets(content)), schemaVersion: 1, scope: "project", kind: "work_item", subject: compactText(redactSecrets(content), 64), content, tags: ["active-work"], status: "active", salience: 4, createdAt: ts, updatedAt: ts };
-      const stored = appendRecord(ctx.cwd, rec);
-      ctx.ui.notify(`work item created: ${recordKey(stored)}`, "success");
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const ts = nowIso();
+        const rec: MemoryRecord = { id: safeId("work_item", redactSecrets(content)), schemaVersion: 1, scope: "project", kind: "work_item", subject: compactText(redactSecrets(content), 64), content, tags: ["active-work"], status: "active", salience: 4, createdAt: ts, updatedAt: ts };
+        const stored = appendRecord(ctx.cwd, rec);
+        ctx.ui.notify(`work item created: ${recordKey(stored)}`, "success");
+      });
+      updateMemoryChrome(ctx);
     },
   });
 
@@ -3472,8 +3805,11 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const id = args.trim().split(/\s+/)[0];
       if (!id) return ctx.ui.notify("Usage: /hmemory-done <id>", "error");
-      const result = updateRecord(ctx.cwd, id, { status: "done" });
-      ctx.ui.notify(updateResultText(result, id, "-> done"), result.updated ? "success" : "error");
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const result = updateRecord(ctx.cwd, id, { status: "done" });
+        ctx.ui.notify(updateResultText(result, id, "-> done"), result.updated ? "success" : "error");
+      });
+      updateMemoryChrome(ctx);
     },
   });
 
@@ -3482,8 +3818,11 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const id = args.trim().split(/\s+/)[0];
       if (!id) return ctx.ui.notify("Usage: /hmemory-pin <id>", "error");
-      const result = updateRecord(ctx.cwd, id, { pinned: true });
-      ctx.ui.notify(updateResultText(result, id, "pinned"), result.updated ? "success" : "error");
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const result = updateRecord(ctx.cwd, id, { pinned: true });
+        ctx.ui.notify(updateResultText(result, id, "pinned"), result.updated ? "success" : "error");
+      });
+      updateMemoryChrome(ctx);
     },
   });
 
@@ -3492,8 +3831,11 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const id = args.trim().split(/\s+/)[0];
       if (!id) return ctx.ui.notify("Usage: /hmemory-unpin <id>", "error");
-      const result = updateRecord(ctx.cwd, id, { pinned: false });
-      ctx.ui.notify(updateResultText(result, id, "unpinned"), result.updated ? "success" : "error");
+      await withHybridMemoryMutation(ctx.cwd, async () => {
+        const result = updateRecord(ctx.cwd, id, { pinned: false });
+        ctx.ui.notify(updateResultText(result, id, "unpinned"), result.updated ? "success" : "error");
+      });
+      updateMemoryChrome(ctx);
     },
   });
 
@@ -3552,6 +3894,7 @@ export default function (pi: ExtensionAPI) {
           status: "active",
           salience: Math.max(1, Math.min(5, Math.round(params.salience ?? 3))) as 1 | 2 | 3 | 4 | 5,
           pinned: params.pinned ?? false,
+          evidence: params.kind === "codebase_note" ? { files: codebaseNoteFileEvidence(ctx.cwd, params.filePaths) } : undefined,
           createdAt: ts,
           updatedAt: ts,
         };

@@ -11,6 +11,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `/hmemory-search [--all] [--scope user\|project] [--kind recipe] [--status stale] <query>` | Search memory records, defaulting to active records unless a status/all flag is provided. |
 | `/hmemory-show <id>` | Show one memory record. |
 | `/hmemory-forget <id\|query> [status]` | Mark a memory `stale`, `done`, or `superseded`; non-id text previews matching active records. |
+| `/hmemory-purge <scoped-id> --force` | Hard-delete all JSONL versions of one scoped memory and write a content-free audit marker. |
 | `/hmemory-done <id>` | Mark a memory/work item done. |
 | `/hmemory-pin <id>` | Pin an active memory record for prioritized retrieval. |
 | `/hmemory-unpin <id>` | Unpin a memory record. |

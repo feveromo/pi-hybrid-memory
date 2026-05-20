@@ -21,7 +21,7 @@ There are two scopes:
 <project>/.pi/hybrid-memory/ # project scope
 ```
 
-Each scope stores append-only `records.jsonl` plus generated summaries/state. Project scope also stores active work, a repo map, and a compact working context.
+Each scope stores append-only `records.jsonl` plus generated summaries/state. Project scope also stores active work, a repo map, and a compact working context. In-process read-through caches keyed by file size/mtime keep prompt-time latest-head retrieval from reparsing unchanged JSONL files.
 
 A memory record has:
 
@@ -49,11 +49,11 @@ Before an agent starts, the extension:
 2. Scores active records by lexical/path/symbol relevance.
 3. Considers pinned active records and active work items, while keeping global pinned codebase notes scoped to matching prompts or project paths. Inactive records (`done`, `stale`, or `superseded`) are not injected even if still pinned.
 4. Groups results into sections such as user preferences, project decisions, recipes, session recaps, and codebase notes.
-5. Lightly polishes the display: command recipes are normalized/deduped, session recaps render as concise outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, session recap file suffixes prefer project-local paths over package/docs paths, global technical notes need distinctive prompt/path matches, and truncation prefers word boundaries.
-6. Adds relevant repo-map matches when available.
-7. Injects a capped `<hybrid_memory>` block into the system prompt. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
+5. Lightly polishes the display: command recipes are normalized/deduped, session recaps render as concise outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, session recap file suffixes prefer project-local paths over package/docs paths, global technical notes need distinctive prompt/path matches, and user-scoped decisions/facts render in a separate global section.
+6. Adds relevant repo-map matches when available. Automatic repo-map injection is stricter than `/hmemory-repo`: it requires a path-like match, an exact symbol/command/tool/hook match, or a configurable minimum number of distinctive non-generic query terms.
+7. Injects a capped `<hybrid_memory>` block into the system prompt. Budgeting is section-aware so high-value sections are not cut mid-record by lower-priority content. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
 
-Mutating hybrid-memory tools use Pi's file mutation queue so parallel tool calls serialize JSONL appends and regenerated summaries/context.
+Mutating hybrid-memory hooks, commands, and tools use Pi's file mutation queue so parallel/local writes serialize JSONL appends and regenerated summaries/context. Session import, compaction mining, doctor cleanup, and prune operations batch record appends so summaries/context are regenerated once per batch rather than once per record.
 
 The injected block explicitly says retrieved records are untrusted context and must not be treated as instructions unless the current user asks.
 
@@ -79,7 +79,7 @@ For each mappable file it records:
 
 The map is used for `/hmemory-repo`, `context.md`, dashboard summaries, and prompt-time repo matches. Repo-map file and read-size caps are configurable through Pi settings while remaining bounded by safe min/max ranges.
 
-During pruning, active unpinned `codebase_note` records are marked stale if a referenced file is missing or has changed since the memory was last updated. This keeps source files ahead of old memory claims.
+When created through the remember tool, `codebase_note` records store lightweight file freshness evidence (`path`, `size`, `mtimeMs`) for referenced files. During pruning, active unpinned codebase notes are marked stale if a referenced file is missing or has changed relative to that evidence, falling back to record update time for older records. This keeps source files ahead of old memory claims.
 
 ## Model audit and cleanup
 
@@ -97,7 +97,7 @@ The extension validates ids, scopes, kinds, statuses, and field sizes before app
 
 ## Hooks
 
-The extension uses Pi hooks to keep context fresh:
+The extension uses Pi hooks to keep context fresh. Mutating hooks run inside the same memory mutation queue as commands/tools:
 
 - `session_start` — initialize files, run a cheap startup refresh, maybe build a small repo map, import current/recent project sessions, and update the status chrome.
 - `before_agent_start` — auto-capture durable preference prompts and inject relevant memory.
@@ -105,6 +105,12 @@ The extension uses Pi hooks to keep context fresh:
 - `session_compact` — mine compaction summaries for decisions, preferences, and work items.
 - `session_tree` — mine branch summaries similarly.
 
+## Hard-delete escape hatch
+
+Normal curation is append-only. `/hmemory-forget`, `/hmemory-doctor`, and `/hmemory-audit` do not physically delete record history.
+
+For privacy cleanup, `/hmemory-purge <scoped-id> --force` rewrites the relevant `records.jsonl` file to remove every version of one identified `scope:id`, regenerates summaries/context, and writes a small audit marker that records the id and count only. The purged record content is intentionally not copied into the audit marker.
+
 ## Generated context
 
-`context.md` is a compact project orientation file. It includes active preferences, decisions/facts, work items, and repo-map highlights. It is regenerated after relevant writes and can be manually refreshed with `/hmemory-context`.
+`context.md` is a compact project orientation file. It includes active user preferences, global user decisions/facts, project decisions/facts, work items, and repo-map highlights. It is regenerated after relevant writes and can be manually refreshed with `/hmemory-context`.

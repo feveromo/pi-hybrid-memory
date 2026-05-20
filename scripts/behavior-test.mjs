@@ -231,6 +231,26 @@ function makeProject(name) {
   assert.match(h.notifications.at(-1).message, /Matching active memories|No record found/, 'query forget should preview candidates instead of pretending to delete raw history');
 }
 
+// Explicit purge should hard-delete JSONL history only when --force is present.
+{
+  const cwd = makeProject('purge-hard-delete');
+  const h = makeHarness(cwd);
+  const remembered = await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'decision',
+    subject: 'temporary purge target',
+    content: 'Temporary purge target content should vanish from JSONL',
+    salience: 3,
+  });
+  await h.command('hmemory-purge', `project:${remembered.details.id}`);
+  assert(readFileSync(join(projectMemoryDir(cwd), 'records.jsonl'), 'utf8').includes('Temporary purge target content'), 'purge without --force should not rewrite JSONL');
+  await h.command('hmemory-purge', `project:${remembered.details.id} --force`);
+  const raw = readFileSync(join(projectMemoryDir(cwd), 'records.jsonl'), 'utf8');
+  assert(!raw.includes('Temporary purge target content'), 'forced purge should remove raw record content from JSONL');
+  assert(!readFileSync(join(projectMemoryDir(cwd), 'summary.md'), 'utf8').includes('Temporary purge target content'), 'forced purge should regenerate summaries');
+  assert.match(h.notifications.at(-1).message, /Audit marker:/, 'forced purge should write a content-free audit marker');
+}
+
 // Stored records should redact common tokens and sensitive paths before they hit JSONL.
 {
   const cwd = makeProject('redaction');
@@ -267,7 +287,7 @@ function makeProject(name) {
   assert.equal(records.length, 4, 'parallel memory tool writes should all be retained');
 }
 
-// Auto-capture should keep durable preferences while ignoring one-off wording.
+// Auto-capture should keep durable preferences while ignoring one-off wording and honoring config.
 {
   const cwd = makeProject('auto-capture');
   const h = makeHarness(cwd);
@@ -278,6 +298,22 @@ function makeProject(name) {
   assert.equal(readRecords(cwd, 'user').length, before, 'pasted reviews should not become durable preferences');
   await h.emit('before_agent_start', { prompt: 'remember that I prefer compact answers in tests', systemPrompt: 'base' });
   assert.equal(readRecords(cwd, 'user').length, before + 1, 'explicit remember/prefer prompt should be auto-captured');
+
+  const offCwd = makeProject('auto-capture-off');
+  mkdirSync(join(offCwd, '.pi'), { recursive: true });
+  writeFileSync(join(offCwd, '.pi', 'settings.json'), JSON.stringify({ hybridMemory: { autoCapture: { preferences: 'off' } } }), 'utf8');
+  const off = makeHarness(offCwd);
+  const beforeOff = readRecords(offCwd, 'user').length;
+  await off.emit('before_agent_start', { prompt: 'remember that I prefer no auto capture here', systemPrompt: 'base' });
+  assert.equal(readRecords(offCwd, 'user').length, beforeOff, 'auto-capture off should not store even explicit remember prompts');
+
+  const heuristicCwd = makeProject('auto-capture-heuristic');
+  mkdirSync(join(heuristicCwd, '.pi'), { recursive: true });
+  writeFileSync(join(heuristicCwd, '.pi', 'settings.json'), JSON.stringify({ hybridMemory: { autoCapture: { preferences: 'heuristic' } } }), 'utf8');
+  const heuristic = makeHarness(heuristicCwd);
+  const beforeHeuristic = readRecords(heuristicCwd, 'user').length;
+  await heuristic.emit('before_agent_start', { prompt: 'i like compact fixture answers', systemPrompt: 'base' });
+  assert.equal(readRecords(heuristicCwd, 'user').length, beforeHeuristic + 1, 'heuristic auto-capture mode should keep broader preference wording');
 }
 
 // Delegated/session-artifact prompts and generic inspection commands should stay out of memory.
@@ -414,6 +450,21 @@ function makeProject(name) {
   assert(context.includes('added.ts added after repo map generation'), 'context should report added files as stale');
 }
 
+// Automatic repo-map injection should avoid generic prompt pollution but keep exact path matches.
+{
+  const cwd = makeProject('repo-auto-injection-strictness');
+  execFileSync('git', ['init', '-q'], { cwd });
+  mkdirSync(join(cwd, 'src'), { recursive: true });
+  writeFileSync(join(cwd, 'src', 'hybrid-memory.ts'), 'export const hybridFeature = 1;\n');
+  execFileSync('git', ['add', 'src/hybrid-memory.ts'], { cwd });
+  const h = makeHarness(cwd);
+  await h.command('hmemory-repomap');
+  const generic = await h.emit('before_agent_start', { prompt: 'review memory implementation', systemPrompt: 'base' });
+  assert(!String(generic[0]?.systemPrompt ?? '').includes('## Repo Map Matches'), 'generic memory prompts should not auto-inject repo-map matches');
+  const exact = await h.emit('before_agent_start', { prompt: 'inspect src/hybrid-memory.ts hybridFeature', systemPrompt: 'base' });
+  assert(String(exact[0]?.systemPrompt ?? '').includes('src/hybrid-memory.ts'), 'path/symbol prompts should still auto-inject repo-map matches');
+}
+
 // Codebase notes should become stale when referenced source files change.
 {
   const cwd = makeProject('codebase-note-staleness');
@@ -429,6 +480,8 @@ function makeProject(name) {
     filePaths: ['src/tracked.ts'],
     salience: 4,
   });
+  const storedBefore = readRecords(cwd, 'project').find((r) => r.id === remembered.details.id);
+  assert.equal(storedBefore.evidence.files[0].path, 'src/tracked.ts', 'codebase notes should store file freshness evidence');
   const future = new Date(Date.now() + 5000);
   utimesSync(sourceFile, future, future);
   await h.command('hmemory-prune');
@@ -526,6 +579,27 @@ function makeProject(name) {
   const before = await h.emit('before_agent_start', { prompt: 'settings panel commit abc1234', systemPrompt: 'base' });
   const injected = String(before[0]?.systemPrompt ?? '');
   assert.equal((injected.match(/abc1234/g) ?? []).length, 1, 'session recaps mentioning the same commit should dedupe in injection');
+}
+
+// Pinned user decisions/facts should render in their own global section and generated context.
+{
+  const cwd = makeProject('global-decision-injection');
+  const h = makeHarness(cwd);
+  await h.tool('hybrid_memory_remember', {
+    scope: 'user',
+    kind: 'decision',
+    subject: 'global package policy',
+    content: 'Global package policy should be visible as a user decision',
+    pinned: true,
+    salience: 5,
+  });
+  const before = await h.emit('before_agent_start', { prompt: 'unrelated prompt still includes pinned decisions', systemPrompt: 'base' });
+  const injected = String(before[0]?.systemPrompt ?? '');
+  assert(injected.includes('## Global Decisions/Facts'), 'user decisions should render in a global decision section');
+  assert(injected.includes('Global package policy should be visible'), 'pinned user decisions should not disappear after selection');
+  await h.command('hmemory-context');
+  const context = readFileSync(join(projectMemoryDir(cwd), 'context.md'), 'utf8');
+  assert(context.includes('## Global decisions/facts'), 'generated context should include user-scoped decisions/facts');
 }
 
 // Pinned user codebase notes should not appear globally unless the prompt or paths make them relevant.

@@ -11,6 +11,9 @@ assert.match(source, /withFileMutationQueue/, 'mutating memory tools should use 
 assert.match(source, /function withHybridMemoryMutation/, 'mutating memory tools should share a local memory mutation wrapper');
 assert.match(source, /withFileMutationQueue\(join\(p\.user, RECORDS\)/, 'memory mutation queue should serialize user records first');
 assert.match(source, /withFileMutationQueue\(join\(p\.project, RECORDS\)/, 'memory mutation queue should serialize project records too');
+assert.match(source, /const recordsFileCache = new Map/, 'record reads should use an mtime/size cache instead of reparsing JSONL on every hot path');
+assert.match(source, /function latestRecordsForCwd/, 'latest-head memory retrieval should use a read-through cache');
+assert.match(source, /function appendRecordsBatch/, 'session imports and cleanup should batch append records before regenerating summaries');
 assert.match(source, /const max = boundedNumber\(args\.trim\(\), hybridMemoryConfig\(ctx\.cwd\)\.pruneActiveSessionRecaps, 3, 100\);/, '/hmemory-prune should use boundedNumber with the configured default for invalid input');
 assert.match(source, /\["ls-files", "--others", "--exclude-standard"\]/, 'repo map should include untracked non-ignored git files');
 assert.match(source, /added after repo map generation/, 'repo map staleness should detect newly added files');
@@ -48,6 +51,8 @@ assert.match(source, /stableId\("preference", content, `auto-prompt:\$\{content\
 assert.match(source, /const MAX_INJECT_CHARS = 4200;/, 'memory injection should stay lean by default');
 assert.match(source, /config\.maxInjectChars/, 'memory injection cap should be configurable');
 assert.match(source, /config\.injectSectionLimits\[title\]/, 'per-section injection limits should be configurable');
+assert.match(source, /function appendInjectionSection/, 'prompt injection should budget by section instead of slicing the whole block');
+assert.match(source, /"Global Decisions\/Facts": 3/, 'user-scoped decisions/facts should have an injection section');
 assert.match(source, /function displaySessionRecap/, 'session recaps should be rendered as clean outcomes and topics');
 assert.match(source, /function dedupeInjectionRecords/, 'injected memory should dedupe noisy near-identical records');
 assert.match(source, /function shouldInjectSessionRecap/, 'session recap injection should hide diagnostic context-inspection recaps');
@@ -60,6 +65,7 @@ assert.match(source, /const withoutPackageDocs = paths\.filter\(\(p\) => !isPack
 assert.match(source, /function distinctiveQueryTerms/, 'global user technical memories should require distinctive prompt matches');
 assert.match(source, /const RECIPE_DISPLAY_COMMAND_LIMIT = 6;/, 'recipe injection should show six short validation commands before +N more');
 assert.match(source, /function shouldInjectPinnedByDefault/, 'pinned global records should still be scoped before default injection');
+assert.match(source, /repoMapAutoInjectMinDistinctiveTerms/, 'automatic repo-map injection should require distinctive prompt matches');
 assert.match(source, /function commandFamilyKey/, 'recipe commands should dedupe by command family');
 assert.match(source, /function visibleWidth/, 'TUI padding should use terminal cell widths for Unicode icons');
 assert.match(source, /import \{[^}]*Text[^}]*\} from "@earendil-works\/pi-tui";/, 'custom tool renderers should use the official Pi TUI Text component');
@@ -84,11 +90,13 @@ assert.match(source, /function formatForgetPreview/, '/hmemory-forget should pre
 assert.match(source, /tombstone: Type\.Optional\(Type\.Boolean\(\)\)/, 'hybrid_memory_forget should support tiny do-not-suggest tombstones for removed items');
 assert.match(source, /tombstoneNote: Type\.Optional\(Type\.String\(\)\)/, 'hybrid_memory_forget should expose tombstoneNote for concise negative preferences');
 assert.match(source, /pi\.registerCommand\("hmemory-audit"/, 'memory audit command should be registered');
+assert.match(source, /pi\.registerCommand\("hmemory-purge"/, 'memory purge command should be available as an explicit hard-delete escape hatch');
 assert.match(source, /complete\(\n    ctx\.model,\n    \{ systemPrompt: MEMORY_AUDIT_SYSTEM_PROMPT, messages: \[message\] \}/, 'memory audit should use the selected Pi model through pi-ai complete');
 assert.match(source, /function applyMemoryAuditPlan/, 'memory audit should be able to apply validated structured cleanup actions');
 assert.match(source, /type\": \"merge_records\"/, 'memory audit prompt should support model-proposed dedupe merges');
 assert.match(source, /lastAuditAppliedAt/, 'memory audit should persist apply metadata in project state');
 assert.match(source, /function createMemoryAuditProgress/, 'memory audit should show a staged progress UI while the model call runs');
+assert.match(source, /function codebaseNoteFileEvidence/, 'codebase notes should store lightweight file freshness evidence');
 assert.match(source, /CancellableLoader/, 'memory audit progress UI should remain cancellable');
 assert.match(source, /const visualAudit = await ctx\.ui\.custom<MemoryAuditResult \| null>/, 'memory audit should distinguish visual UI result from non-visual fallback');
 assert.match(source, /if \(visualAudit === null\) return ctx\.ui\.notify\("memory audit cancelled", "info"\);/, 'memory audit should treat null as explicit user cancel');
@@ -109,6 +117,7 @@ assert.doesNotMatch(source, /reviewKindLabel\(r\)\.padEnd/, 'memory review shoul
 assert.match(source, /"Relevant Session Recaps": 2/, 'session recap injection should be tightly capped by default');
 assert.match(source, /Prior session \(\$\{location\}\)/, 'session recaps should use compact location labels instead of raw cwd prefixes');
 assert.match(source, /DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS = 8/, 'turn/startup refresh should prune old session recap noise by default');
+assert.match(source, /autoCapturePreferences: DEFAULT_AUTO_CAPTURE_PREFERENCES/, 'auto-capture preferences should be configurable with an explicit default');
 assert.match(source, /pruneMemory\(cwd, hybridMemoryConfig\(cwd\)\.autoPruneActiveSessionRecaps\)/, 'turn refresh should use the configured auto-prune recap cap');
 assert.match(source, /pruneMemory\(cwd, config\.autoPruneActiveSessionRecaps\)/, 'startup refresh should use the configured auto-prune recap cap');
 assert.doesNotMatch(source, /function extractSymbols\(/, 'unused extractSymbols wrapper should stay removed');

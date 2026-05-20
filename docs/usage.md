@@ -57,6 +57,15 @@ Pinned active records are favored during retrieval and shown before lower-salien
 
 Records are append-only: status changes append a new latest version rather than rewriting history. In plain terms, “forget” means the record becomes inactive and stops being injected or returned by default search; it is not a hard delete of the JSONL history. If you pass a query instead of an id, Pi previews matching active records and tells you which scoped id to use.
 
+For privacy cleanup, use the explicit hard-delete escape hatch:
+
+```text
+/hmemory-purge project:<id> --force
+/hmemory-purge user:<id> --force
+```
+
+Purge rewrites the relevant `records.jsonl` to remove all versions of that one scoped id, regenerates summaries/context, and writes a content-free audit marker. It intentionally does not log the purged content.
+
 ### Run deterministic curation
 
 ```text
@@ -120,7 +129,7 @@ The repo map indexes file paths, file kinds, imports, symbols, commands, tools, 
 /hmemory-context
 ```
 
-The injected memory block warns when the repo map is stale. Run `/hmemory-repomap` or `/hmemory-refresh` after meaningful code changes.
+The injected memory block warns when the repo map is stale. Run `/hmemory-repomap` or `/hmemory-refresh` after meaningful code changes. Automatic repo-map injection is stricter than manual `/hmemory-repo`: generic prompts are ignored unless they contain a path-like term, exact symbol/command/tool/hook match, or enough distinctive non-generic terms.
 
 ## Session import workflow
 
@@ -139,9 +148,9 @@ Recommended use:
 - Use `/hmemory-refresh` for routine updates.
 - Use `/hmemory-bootstrap` once when opening an older project with useful session history.
 - Use `/hmemory-prune` when session recap noise accumulates. It also marks obvious pasted-review preferences, delegated subagent recaps, generic command-only recipes, and command recipes covered by newer/pinned recipes stale.
-- Pruning also marks unpinned `codebase_note` records stale when their referenced source files are changed or removed.
+- Pruning also marks unpinned `codebase_note` records stale when their referenced source files are changed or removed. Codebase notes created through `hybrid_memory_remember` store lightweight file freshness evidence to make this more reliable.
 
-Prompt injection also does a small presentation pass: near-identical command recipes are deduped, session recaps are shown as outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, session recap file suffixes prefer project-local paths over package/docs paths, and global pinned technical notes stay out of unrelated projects unless the prompt has a distinctive match.
+Prompt injection also does a small presentation pass: near-identical command recipes are deduped, session recaps are shown as outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, session recap file suffixes prefer project-local paths over package/docs paths, user-scoped decisions/facts get a global section, and global pinned technical notes stay out of unrelated projects unless the prompt has a distinctive match.
 
 ## Tool examples
 
