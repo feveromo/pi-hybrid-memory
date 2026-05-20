@@ -92,7 +92,7 @@ For larger or older projects, use an explicit command:
 /hmemory-prune [maxActiveRecaps]
 /hmemory-review
 /hmemory-audit [preview|apply] [focus]
-/hmemory-forget <id> [stale|done|superseded]
+/hmemory-forget <id|query> [stale|done|superseded]
 ```
 
 ## Tuning knobs

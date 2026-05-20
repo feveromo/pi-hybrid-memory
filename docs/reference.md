@@ -10,7 +10,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `/hmemory-config` | Show active hybrid-memory tuning from Pi settings. |
 | `/hmemory-search [--all] [--scope user\|project] [--kind recipe] [--status stale] <query>` | Search memory records, defaulting to active records unless a status/all flag is provided. |
 | `/hmemory-show <id>` | Show one memory record. |
-| `/hmemory-forget <id> [status]` | Mark a memory `stale`, `done`, or `superseded`. |
+| `/hmemory-forget <id\|query> [status]` | Mark a memory `stale`, `done`, or `superseded`; non-id text previews matching active records. |
 | `/hmemory-done <id>` | Mark a memory/work item done. |
 | `/hmemory-pin <id>` | Pin an active memory record for prioritized retrieval. |
 | `/hmemory-unpin <id>` | Unpin a memory record. |
@@ -23,7 +23,6 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `/hmemory-health` | Show memory health, active/inactive counts, duplicate hints, cleanup candidate counts, scope hints, and repo-map staleness. |
 | `/hmemory-doctor [preview\|apply] [maxRecaps]` | Write a deterministic curation report and optionally append stale statuses for safe cleanup candidates. |
 | `/hmemory-dashboard [full]` | Open a styled memory/repo dashboard overlay. |
-| `/hmemory-widget [off]` | Show or hide a compact memory widget above the editor. |
 | `/hmemory-context` | Regenerate/show the compact working context file. |
 | `/hmemory-ingest-session [current\|recent N\|path]` | Import memory from Pi session JSONL files. |
 | `/hmemory-refresh [N]` | Rebuild repo map and import current + N recent project sessions. |
@@ -36,7 +35,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | --- | --- |
 | `hybrid_memory_remember` | Store a typed user/project memory record. |
 | `hybrid_memory_search` | Search local memory records by lexical/path/symbol relevance, with optional scope/kind/status filters. |
-| `hybrid_memory_forget` | Mark a memory record done, stale, or superseded. |
+| `hybrid_memory_forget` | Mark a memory record done, stale, or superseded; optional `tombstone`/`tombstoneNote` preserves a small active “do not suggest this again” preference. |
 | `hybrid_memory_import_sessions` | Import compact memory from Pi session JSONL files. |
 | `hybrid_memory_refresh_context` | Rebuild repo map and optionally import recent session recaps. |
 | `hybrid_memory_bootstrap_project` | Rebuild repo map, import prior project sessions, prune, and roll up. |

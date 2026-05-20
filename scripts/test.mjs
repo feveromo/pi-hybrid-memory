@@ -74,10 +74,15 @@ assert.match(source, /pi\.registerCommand\("hmemory-doctor"/, 'memory doctor com
 assert.match(source, /function memoryStatsSnapshot/, 'memory stats should distinguish active/inactive counts by scope/status/kind');
 assert.match(source, /function searchRecordsWithOptions/, 'memory search should support filtered active/all scope/kind/status queries');
 assert.match(source, /function scoreRecordWithSearchOptions/, 'status-specific inactive searches should not be hidden by normal stale/superseded scoring penalties');
+assert.match(source, /function strongQueryTerms/, 'exact package/path-like memory searches should filter unrelated generic matches');
+assert.match(source, /Use one hybrid_memory_search call for both user and project memory by default/, 'memory search tool guidance should discourage duplicate identical scope checks');
 assert.match(source, /name: "hybrid_memory_doctor"/, 'memory doctor should be available as a tool for agents');
 assert.match(source, /writeMemoryDoctorReport/, 'memory doctor should write a reviewable before/after report');
 assert.match(source, /status: Type\.Optional\(StringEnum\(searchStatusEnum\)\)/, 'hybrid_memory_search should expose status filters');
 assert.match(source, /includeInactive: Type\.Optional\(Type\.Boolean\(\)\)/, 'hybrid_memory_search should expose an includeInactive/all-history option');
+assert.match(source, /function formatForgetPreview/, '/hmemory-forget should preview matching records when given query text instead of an id');
+assert.match(source, /tombstone: Type\.Optional\(Type\.Boolean\(\)\)/, 'hybrid_memory_forget should support tiny do-not-suggest tombstones for removed items');
+assert.match(source, /tombstoneNote: Type\.Optional\(Type\.String\(\)\)/, 'hybrid_memory_forget should expose tombstoneNote for concise negative preferences');
 assert.match(source, /pi\.registerCommand\("hmemory-audit"/, 'memory audit command should be registered');
 assert.match(source, /complete\(\n    ctx\.model,\n    \{ systemPrompt: MEMORY_AUDIT_SYSTEM_PROMPT, messages: \[message\] \}/, 'memory audit should use the selected Pi model through pi-ai complete');
 assert.match(source, /function applyMemoryAuditPlan/, 'memory audit should be able to apply validated structured cleanup actions');
@@ -91,6 +96,8 @@ assert.match(source, /if \(!audit\) \{\n          audit = await generateMemoryAu
 assert.doesNotMatch(source.match(/async function generateMemoryAudit[\s\S]*?\n}/)?.[0] ?? '', /temperature:/, 'memory audit should not pass temperature because Codex models reject it');
 assert.match(source, /function asInactiveStatus/, 'memory audit set_status and merge source statuses should stay inactive-only');
 assert.match(source, /const fileText = files\.length \? files\.join\("  "\) : warp\.dim\("—"\);/, 'memory review should reserve the files row to keep overlay height stable');
+assert.match(source, /theme\.bg\(selected \? "selectedBg" : "customMessageBg", text\)/, 'memory review overlay rows should use a theme background so underlying transcript does not show through');
+assert.match(source, /if \(code\.startsWith\("38;"\)\) return `\\x1b\[\$\{code\}m\$\{text\}\\x1b\[39m`;/, 'review overlay foreground colors should not clear row backgrounds with full SGR resets');
 assert.match(source, /for \(let i = 0; i < REVIEW_DETAIL_ROWS; i\+\+\) lines\.push\(row\(detailRows\[i\] \?\? ""\)\);/, 'memory review should render a fixed-size details footer');
 assert.match(source, /function memoryToolCall/, 'hybrid memory tools should share polished call rendering helpers');
 assert.match(source, /return new Text\(text, 0, 0\);/, 'hybrid memory tool renderers should return Text components');
@@ -106,5 +113,7 @@ assert.match(source, /pruneMemory\(cwd, hybridMemoryConfig\(cwd\)\.autoPruneActi
 assert.match(source, /pruneMemory\(cwd, config\.autoPruneActiveSessionRecaps\)/, 'startup refresh should use the configured auto-prune recap cap');
 assert.doesNotMatch(source, /function extractSymbols\(/, 'unused extractSymbols wrapper should stay removed');
 assert.match(source, /finally \{\n        updateMemoryChrome\(ctx\);\n      \}/, 'long-running commands should restore the memory chrome after temporary statuses');
+assert.doesNotMatch(source, /registerCommand\("hmemory-widget"/, 'persistent hmemory widget command should stay removed');
+assert.match(source, /clearRemovedWidget\(ctx\);/, 'extension startup/reload should clear any old persistent hybrid-memory widget');
 
 console.log('pi-hybrid-memory tests ok');
