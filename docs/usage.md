@@ -107,12 +107,15 @@ Keys inside the review overlay:
 /hmemory-audit
 /hmemory-audit preview
 /hmemory-audit apply
-/hmemory-audit apply session recaps
+/hmemory-audit --scope project --kind session_recap --page 2
+/hmemory-audit apply --actions 1,3 session recaps
 ```
 
 The command sends a bounded, redacted packet of active memory records to the currently selected Pi model. The model returns a structured cleanup plan. The extension validates the plan and applies only append-only changes: mark stale/done/superseded, pin/unpin, rewrite a record head, create a clean record, or merge duplicates into a new superseding record.
 
-In interactive mode, `/hmemory-audit` asks before applying. Use `preview` for report-only, or `apply` to skip confirmation. Reports are saved under:
+Use `--scope`, `--kind`, `--page`, and `--limit` to audit a smaller batch when the active set is large. Reports distinguish proposed model actions from actual append-only record writes, because one merge action can create one record and update several source records.
+
+In interactive TUI mode, `/hmemory-audit` opens an action review overlay so you can toggle individual proposed actions before applying. Use `preview` for report-only, `apply` to skip confirmation, or `apply --actions 1,3` to apply only specific numbered actions. Reports are saved under:
 
 ```text
 <project>/.pi/hybrid-memory/audits/

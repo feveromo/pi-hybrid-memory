@@ -51,7 +51,7 @@ Applied changes are append-only:
 - merges create a new superseding record and mark source records superseded
 - records are not physically deleted by audit/forget/doctor flows
 
-In interactive mode, `/hmemory-audit` asks before applying unless you pass `apply`. Use `preview` for report-only. Reports are saved under `<project>/.pi/hybrid-memory/audits/`.
+In interactive TUI mode, `/hmemory-audit` shows a per-action review overlay before applying unless you pass `apply`. Use `preview` for report-only. Reports are saved under `<project>/.pi/hybrid-memory/audits/`.
 
 ## Hard-delete escape hatch
 

@@ -83,7 +83,7 @@ When created through the remember tool, `codebase_note` records store lightweigh
 
 ## Model audit and cleanup
 
-`/hmemory-audit` builds a bounded audit packet from active records, local hygiene flags, duplicate-subject hints, and repo-map freshness. The packet is redacted with the same best-effort secret redaction used for storage and injection.
+`/hmemory-audit` builds a bounded audit packet from active records, local hygiene flags, duplicate-subject hints, and repo-map freshness. The packet can be narrowed by scope, kind, focus query, and page/limit so large active sets can be reviewed in batches. The packet is redacted with the same best-effort secret redaction used for storage and injection.
 
 The selected Pi model returns strict JSON with a short report plus structured actions. Supported actions are:
 
@@ -93,7 +93,7 @@ The selected Pi model returns strict JSON with a short report plus structured ac
 - `create_record` — add a compact new record
 - `merge_records` — create one clean superseding record and mark sources superseded
 
-The extension validates ids, scopes, kinds, statuses, and field sizes before applying. Reports are saved in `<project>/.pi/hybrid-memory/audits/`.
+The extension validates ids, scopes, kinds, statuses, and field sizes before applying. In the TUI, users can toggle individual proposed actions before apply; non-interactive apply can target numbered actions with `--actions`. Reports are saved in `<project>/.pi/hybrid-memory/audits/` and distinguish model actions from actual append-only record writes.
 
 ## Hooks
 

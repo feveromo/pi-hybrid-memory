@@ -95,6 +95,10 @@ assert.match(source, /complete\(\n    ctx\.model,\n    \{ systemPrompt: MEMORY_A
 assert.match(source, /function applyMemoryAuditPlan/, 'memory audit should be able to apply validated structured cleanup actions');
 assert.match(source, /type\": \"merge_records\"/, 'memory audit prompt should support model-proposed dedupe merges');
 assert.match(source, /lastAuditAppliedAt/, 'memory audit should persist apply metadata in project state');
+assert.match(source, /clean\.startsWith\("--scope"\)/, 'memory audit should support scope filters for targeted cleanup');
+assert.match(source, /clean\.startsWith\("--page"\)/, 'memory audit should support paging through capped active records');
+assert.match(source, /function chooseMemoryAuditActionIndexes/, 'memory audit should let TUI users select individual actions before applying');
+assert.match(source, /Record writes applied/, 'memory audit report should distinguish proposed actions from record writes');
 assert.match(source, /function createMemoryAuditProgress/, 'memory audit should show a staged progress UI while the model call runs');
 assert.match(source, /function codebaseNoteFileEvidence/, 'codebase notes should store lightweight file freshness evidence');
 assert.match(source, /CancellableLoader/, 'memory audit progress UI should remain cancellable');
