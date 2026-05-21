@@ -91,7 +91,7 @@ For larger or older projects, use an explicit command:
 /hmemory-config
 /hmemory-prune [maxActiveRecaps]
 /hmemory-review
-/hmemory-audit [preview|apply] [focus]
+/hmemory-audit [preview|apply] [--scope user|project] [--kind recipe] [--page N] [--limit N] [--actions 1,3] [focus]
 /hmemory-forget <id|query> [stale|done|superseded]
 /hmemory-purge <scoped-id> --force
 ```

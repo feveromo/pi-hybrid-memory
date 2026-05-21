@@ -57,7 +57,7 @@ It provides a small, inspectable memory layer for Pi agents:
 - `/hmemory-doctor [preview|apply] [maxRecaps]` — write a curation report with safe cleanup candidates, scope hints, and optional append-only stale-status application.
 - `/hmemory-show <id>` — show one memory record.
 - `/hmemory-review` — review/pin/stale/done active memories in a TUI overlay.
-- `/hmemory-audit [preview|apply] [focus]` — use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes.
+- `/hmemory-audit [preview|apply] [--scope user|project] [--kind recipe] [--page N] [--limit N] [--actions 1,3] [focus]` — use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes.
 - `/hmemory-prune [maxActiveRecaps]` — mark duplicate/old session recaps stale and optionally create a rollup.
 - `/hmemory-dashboard [full]` — open a styled TUI overlay with memory/repo health; `full` shows command/tool details.
 - `/hmemory-context` — regenerate/show the compact working context file.
@@ -120,4 +120,4 @@ npm run validate
 
 ## Notes / future work
 
-Still intentionally simple: no vector DB, no daemon, and no external service by default. `/hmemory-audit` is explicit and uses whatever Pi model/provider you selected, with a redacted bounded packet and append-only validated changes. Normal curation remains append-only; `/hmemory-purge <scoped-id> --force` is the explicit hard-delete escape hatch. Startup/turn auto-refresh is deliberately bounded, compact, local, and lightly configurable through Pi settings; use `/hmemory-bootstrap` for deeper historical backfills.
+Still intentionally simple: no vector DB, no daemon, and no external service by default. `/hmemory-audit` is explicit and uses whatever Pi model/provider you selected, with a redacted bounded packet, targeted filters/paging, optional per-action selection, and append-only validated changes. Normal curation remains append-only; `/hmemory-purge <scoped-id> --force` is the explicit hard-delete escape hatch. Startup/turn auto-refresh is deliberately bounded, compact, local, and lightly configurable through Pi settings; use `/hmemory-bootstrap` for deeper historical backfills.

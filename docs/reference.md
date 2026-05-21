@@ -17,7 +17,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `/hmemory-unpin <id>` | Unpin a memory record. |
 | `/hmemory-work <description>` | Create an active project work item. |
 | `/hmemory-review` | Review/pin/stale/done records in a TUI overlay. |
-| `/hmemory-audit [preview|apply] [focus]` | Use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes. |
+| `/hmemory-audit [preview|apply] [--scope user\|project] [--kind recipe] [--page N] [--limit N] [--actions 1,3] [focus]` | Use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes. |
 | `/hmemory-prune [maxActiveRecaps]` | Prune duplicate/old session-recapped memories and maybe create a rollup. |
 | `/hmemory-repomap` | Rebuild the repo map for the current project. |
 | `/hmemory-repo <query>` | Search repo-map files, symbols, imports, commands, tools, and hooks. |
