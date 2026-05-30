@@ -48,6 +48,7 @@ It provides a small, inspectable memory layer for Pi agents:
 
 - `/hmemory` — show memory stats.
 - `/hmemory-config` — show active hybrid-memory tuning from Pi settings.
+- `/hmemory-toggle on|off [--global|--project]` — enable/disable automatic injection, auto-capture, auto-import, and agent-callable memory tools without deleting stored JSONL data.
 - `/hmemory-search [--all] [--scope user|project] [--kind recipe] [--status stale] <query>` — search memory.
 - `/hmemory-forget <id|query> [status]` — mark a memory stale/done/superseded; use `user:<id>` or `project:<id>` if ambiguous. If no id matches, it previews matching active records.
 - `/hmemory-purge <scoped-id> --force` — hard-delete all JSONL versions of one memory and write a content-free audit marker.

@@ -8,6 +8,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | --- | --- |
 | `/hmemory` | Show memory stats and storage roots. |
 | `/hmemory-config` | Show active hybrid-memory tuning from Pi settings. |
+| `/hmemory-toggle on\|off [--global\|--project]` | Enable/disable automatic injection/capture/import and agent-callable memory tools without deleting JSONL data. |
 | `/hmemory-search [--all] [--scope user\|project] [--kind recipe] [--status stale] <query>` | Search memory records, defaulting to active records unless a status/all flag is provided. |
 | `/hmemory-show <id>` | Show one memory record. |
 | `/hmemory-forget <id\|query> [status]` | Mark a memory `stale`, `done`, or `superseded`; non-id text previews matching active records. |

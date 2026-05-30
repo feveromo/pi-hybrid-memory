@@ -9,6 +9,7 @@ import { performance } from 'node:perf_hooks';
 const repoRoot = resolve(new URL('..', import.meta.url).pathname);
 const tempRoot = mkdtempSync(join(tmpdir(), 'pi-hybrid-memory-behavior-'));
 const tempHome = join(tempRoot, 'home');
+const realHome = process.env.HOME;
 mkdirSync(tempHome, { recursive: true });
 process.env.HOME = tempHome;
 
@@ -20,7 +21,7 @@ function linkPackage(moduleRoot, packageName, target) {
 
 const moduleRoot = join(tempRoot, 'module');
 mkdirSync(moduleRoot, { recursive: true });
-const globalNodeModules = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
+const globalNodeModules = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', env: { ...process.env, HOME: realHome } }).trim();
 const piRoot = join(globalNodeModules, '@earendil-works', 'pi-coding-agent');
 linkPackage(moduleRoot, '@earendil-works/pi-ai', join(piRoot, 'node_modules', '@earendil-works', 'pi-ai'));
 linkPackage(moduleRoot, '@earendil-works/pi-coding-agent', piRoot);
@@ -45,6 +46,7 @@ function readRecords(cwd, scope = 'project') {
 function makeHarness(cwd, sessionFile) {
   const commands = new Map();
   const tools = new Map();
+  let activeTools = [];
   const handlers = new Map();
   const notifications = [];
   const statuses = [];
@@ -64,7 +66,13 @@ function makeHarness(cwd, sessionFile) {
   const pi = {
     on: (event, handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
     registerCommand: (name, config) => commands.set(name, config),
-    registerTool: (config) => tools.set(config.name, config),
+    registerTool: (config) => {
+      tools.set(config.name, config);
+      if (!activeTools.includes(config.name)) activeTools.push(config.name);
+    },
+    getActiveTools: () => [...activeTools],
+    getAllTools: () => [...tools.values()].map((tool) => ({ name: tool.name })),
+    setActiveTools: (names) => { activeTools = [...names]; },
   };
   extension(pi);
   return {
@@ -73,6 +81,7 @@ function makeHarness(cwd, sessionFile) {
     statuses,
     widgets,
     commands,
+    activeTools: () => [...activeTools],
     command: async (name, args = '') => commands.get(name).handler(args, ctx),
     tool: async (name, params = {}) => tools.get(name).execute('test', params, undefined, () => {}, ctx),
     emit: async (event, payload = {}) => {
@@ -316,6 +325,29 @@ function makeProject(name) {
   assert.equal(readRecords(heuristicCwd, 'user').length, beforeHeuristic + 1, 'heuristic auto-capture mode should keep broader preference wording');
 }
 
+// The enabled toggle should disable automatic injection/capture/import and remove agent tools without deleting data.
+{
+  const cwd = makeProject('hybrid-memory-toggle-disabled');
+  mkdirSync(join(cwd, '.pi'), { recursive: true });
+  writeFileSync(join(cwd, '.pi', 'settings.json'), JSON.stringify({ hybridMemory: { enabled: false } }, null, 2) + '\n', 'utf8');
+  const h = makeHarness(cwd);
+  await h.emit('session_start');
+  assert(!h.activeTools().some((name) => name.startsWith('hybrid_memory_')), 'disabled hybrid memory should remove agent-callable memory tools');
+  const before = readRecords(cwd, 'user').length;
+  const disabledBefore = await h.emit('before_agent_start', { prompt: 'remember that I prefer disabled memory tests', systemPrompt: 'base' });
+  assert.equal(readRecords(cwd, 'user').length, before, 'disabled hybrid memory should not auto-capture prompts');
+  assert.equal(disabledBefore[0], undefined, 'disabled hybrid memory should not inject prompt context');
+  const disabledTool = await h.tool('hybrid_memory_stats');
+  assert.equal(disabledTool.details.disabled, true, 'disabled hybrid memory tools should explain that the feature is off if called from stale context');
+
+  await h.command('hmemory-toggle', 'on --project');
+  assert(h.activeTools().some((name) => name === 'hybrid_memory_search'), 're-enabling should restore hybrid memory tools without requiring reload');
+  await h.emit('before_agent_start', { prompt: 'remember that I prefer reenabled memory tests', systemPrompt: 'base' });
+  assert.equal(readRecords(cwd, 'user').length, before + 1, 'reenabled hybrid memory should capture prompts again');
+  await h.command('hmemory-toggle', 'off --project');
+  assert(!h.activeTools().some((name) => name.startsWith('hybrid_memory_')), 'turning hybrid memory back off should remove tools again');
+}
+
 // Delegated/session-artifact prompts and generic inspection commands should stay out of memory.
 {
   const cwd = makeProject('delegated-session-noise');
@@ -463,6 +495,54 @@ function makeProject(name) {
   assert(!String(generic[0]?.systemPrompt ?? '').includes('## Repo Map Matches'), 'generic memory prompts should not auto-inject repo-map matches');
   const exact = await h.emit('before_agent_start', { prompt: 'inspect src/hybrid-memory.ts hybridFeature', systemPrompt: 'base' });
   assert(String(exact[0]?.systemPrompt ?? '').includes('src/hybrid-memory.ts'), 'path/symbol prompts should still auto-inject repo-map matches');
+}
+
+// Injection truncation and dense path suffixes should read cleanly.
+{
+  const cwd = makeProject('polished-injection-omissions');
+  const h = makeHarness(cwd);
+  for (let i = 1; i <= 6; i++) {
+    await h.tool('hybrid_memory_remember', {
+      scope: 'project',
+      kind: 'decision',
+      subject: `polished decision ${i}`,
+      content: `Polished decision ${i} should be injected cleanly`,
+      filePaths: i === 1 ? ['one.ts', 'two.ts', 'three.ts', 'four.ts', 'five.ts', 'six.ts'] : [],
+      pinned: true,
+      salience: 5,
+    });
+  }
+  const before = await h.emit('before_agent_start', { prompt: 'polished preference injection display', systemPrompt: 'base' });
+  const injected = String(before[0]?.systemPrompt ?? '');
+  assert(injected.includes('…1 additional lower-ranked record omitted'), 'truncation should explain how many lower-ranked records were omitted');
+  assert(!injected.includes('…truncated'), 'injection should avoid abrupt raw truncated markers');
+  assert(injected.includes('one.ts, two.ts, three.ts, four.ts, five.ts; 1 more path'), 'long file suffixes should cap inline paths and summarize the rest');
+}
+
+// Repo-map matches should be labeled as search hints and filter junk symbols.
+{
+  const cwd = makeProject('repo-map-polished-hints');
+  mkdirSync(join(cwd, 'src'), { recursive: true });
+  writeFileSync(join(cwd, 'src', 'noisy.ts'), 'export const noisyMagic = 1;\n');
+  mkdirSync(projectMemoryDir(cwd), { recursive: true });
+  writeFileSync(join(projectMemoryDir(cwd), 'repomap.json'), JSON.stringify({
+    schemaVersion: 1,
+    root: cwd,
+    generatedAt: new Date(Date.now() + 2000).toISOString(),
+    files: [{
+      path: 'src/noisy.ts',
+      kind: 'code',
+      symbols: ['in', 'and', 'class', 'to', 'noisyMagic'],
+      imports: [],
+      size: 29,
+    }],
+  }, null, 2) + '\n', 'utf8');
+  const h = makeHarness(cwd);
+  const before = await h.emit('before_agent_start', { prompt: 'inspect src/noisy.ts noisyMagic', systemPrompt: 'base' });
+  const injected = String(before[0]?.systemPrompt ?? '');
+  assert(injected.includes('Codebase search hints from the current working tree; may be noisy or stale.'), 'repo-map injection should label matches as search hints');
+  assert(injected.includes('symbols: noisyMagic'), 'repo-map injection should keep useful symbols');
+  assert(!injected.includes('symbols: in, and, class'), 'repo-map injection should filter junk symbols');
 }
 
 // Codebase notes should become stale when referenced source files change.

@@ -89,6 +89,7 @@ For larger or older projects, use an explicit command:
 ```text
 /hmemory-health
 /hmemory-config
+/hmemory-toggle on|off [--global|--project]
 /hmemory-prune [maxActiveRecaps]
 /hmemory-review
 /hmemory-audit [preview|apply] [--scope user|project] [--kind recipe] [--page N] [--limit N] [--actions 1,3] [focus]
@@ -103,6 +104,7 @@ The defaults are intentionally compact. If a large project needs different bound
 ```json
 {
   "hybridMemory": {
+    "enabled": true,
     "maxInjectChars": 4200,
     "injectSectionLimits": {
       "User Preferences": 5,
@@ -133,6 +135,7 @@ You can also group repo-map and prune values if you prefer a tidier settings fil
 ```json
 {
   "hybridMemory": {
+    "enabled": true,
     "repoMap": {
       "fileLimit": 2500,
       "readMaxBytes": 200000,
@@ -157,6 +160,29 @@ You can also group repo-map and prune values if you prefer a tidier settings fil
 ```
 
 Run `/hmemory-config` to inspect the effective values for the current project.
+
+## Toggle hybrid memory
+
+Set `hybridMemory.enabled` to `false` to disable automatic prompt injection, prompt preference auto-capture, current-session auto-import, compaction/branch mining, and agent-callable `hybrid_memory_*` tools. Stored JSONL files are left untouched, and explicit `/hmemory-*` slash commands remain available so you can inspect data or turn memory back on.
+
+```json
+{
+  "hybridMemory": {
+    "enabled": false
+  }
+}
+```
+
+Use the command form for quick changes:
+
+```text
+/hmemory-toggle off           # global Pi setting
+/hmemory-toggle on            # global Pi setting
+/hmemory-toggle off --project # current project .pi/settings.json
+/hmemory-toggle status
+```
+
+Project `.pi/settings.json` values override the global `~/.pi/agent/settings.json` value.
 
 `autoCapture.preferences` supports:
 

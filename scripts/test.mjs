@@ -7,6 +7,9 @@ const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.me
 assert.match(source, /sk-\(\?:ant-\|proj-\)\?\[A-Za-z0-9_-\]\{16,\}/, 'redaction should cover plain sk-... plus sk-ant-/sk-proj- keys');
 assert.doesNotMatch(source.match(/function durablePreferencePrompt[\s\S]*?\n}/)?.[0] ?? '', /\bi want\b/i, 'session preference import should not treat broad "i want" as durable');
 assert.match(source, /function hybridMemoryConfig/, 'tuning knobs should load from Pi settings');
+assert.match(source, /enabled: true/, 'hybrid memory should be enabled by default and disableable through settings');
+assert.match(source, /pi\.registerCommand\("hmemory-toggle"/, 'hybrid memory should expose a toggle command');
+assert.match(source, /setActiveTools/, 'disabled hybrid memory should remove agent-callable memory tools');
 assert.match(source, /withFileMutationQueue/, 'mutating memory tools should use Pi file mutation queue for parallel tool safety');
 assert.match(source, /function withHybridMemoryMutation/, 'mutating memory tools should share a local memory mutation wrapper');
 assert.match(source, /withFileMutationQueue\(join\(p\.user, RECORDS\)/, 'memory mutation queue should serialize user records first');
@@ -52,7 +55,11 @@ assert.match(source, /const MAX_INJECT_CHARS = 4200;/, 'memory injection should 
 assert.match(source, /config\.maxInjectChars/, 'memory injection cap should be configurable');
 assert.match(source, /config\.injectSectionLimits\[title\]/, 'per-section injection limits should be configurable');
 assert.match(source, /function appendInjectionSection/, 'prompt injection should budget by section instead of slicing the whole block');
+assert.match(source, /additional lower-ranked/, 'injection truncation should explain omitted lower-ranked records or matches');
+assert.match(source, /Codebase search hints from the current working tree; may be noisy or stale\./, 'repo-map injection should label matches as noisy/stale search hints');
+assert.match(source, /function displayRepoSymbols/, 'repo-map injection should filter low-value parser symbols from display');
 assert.match(source, /"Global Decisions\/Facts": 3/, 'user-scoped decisions/facts should have an injection section');
+assert.match(source, /if \(!hybridMemoryEnabled\(cwd\)\) return "";/, 'disabled hybrid memory should skip prompt injection');
 assert.match(source, /function displaySessionRecap/, 'session recaps should be rendered as clean outcomes and topics');
 assert.match(source, /function dedupeInjectionRecords/, 'injected memory should dedupe noisy near-identical records');
 assert.match(source, /function shouldInjectSessionRecap/, 'session recap injection should hide diagnostic context-inspection recaps');
