@@ -2,9 +2,78 @@
 
 # pi-hybrid-memory
 
-Local-first hybrid memory for Pi.
+Local-first, inspectable memory and repo context for Pi coding agents.
 
-It provides a small, inspectable memory layer for Pi agents:
+`pi-hybrid-memory` gives long-running AI coding workflows a small memory layer that maintainers can audit with normal tools. It is a Pi extension that plugs into Pi's hooks, commands, and tools. It stores durable preferences, project decisions, active work, session recaps, validation recipes, and codebase notes in JSONL/Markdown, then injects only a bounded, redacted, relevance-ranked context block into future Pi turns.
+
+The goal is simple: help coding agents remember useful project context without turning old chat text into hidden authority.
+
+## Why this matters
+
+AI-assisted open-source maintenance depends on context: project decisions, security constraints, release checks, validation commands, and the small "we already learned this" details that get lost between sessions. Memory is also a trust boundary. If it is opaque, unbounded, stale, or full of secrets, it can make agents less safe instead of more useful.
+
+This project explores a conservative path for agent memory:
+
+- **Local-first by default** — no hosted service, daemon, vector database, or external graph database is required.
+- **Human-inspectable storage** — memory is plain JSONL plus generated Markdown summaries.
+- **Repo-aware retrieval** — lexical/path/symbol matching and a lightweight repo map keep context grounded in the current codebase.
+- **Security-conscious injection** — retrieved memory is explicitly marked as untrusted context, not instructions.
+- **Append-only maintenance** — normal cleanup marks records stale, done, or superseded instead of silently rewriting history.
+
+## Security model at a glance
+
+| Boundary | How it is handled |
+| --- | --- |
+| Local data | User memory lives in `~/.pi/agent/memory/`; project memory lives in `<project>/.pi/hybrid-memory/`. |
+| Prompt injection | Retrieved records are wrapped in a `<hybrid_memory>` block that warns agents not to treat memory as instructions. |
+| Secret handling | Text is redacted before storage and injection for common API keys, authorization headers, private-key blocks, token assignments, and sensitive path names. |
+| Sensitive files | Repo maps exclude `.pi/`, `.git/`, `node_modules/`, common cache/build output, binary/archive/database files, and sensitive credential paths. |
+| Context size | Prompt-time injection uses section-aware caps so memory stays bounded and reviewable. |
+| Cleanup | `/hmemory-forget`, `/hmemory-doctor`, and `/hmemory-audit` append newer inactive heads; `/hmemory-purge <scoped-id> --force` is the explicit hard-delete escape hatch. |
+| Model-assisted audit | `/hmemory-audit` is opt-in, sends a bounded best-effort-redacted packet to the selected Pi model/provider, validates structured actions, and writes an audit report. |
+
+See [Security and privacy](docs/security-and-privacy.md) and [SECURITY.md](SECURITY.md) for more detail.
+
+## Core workflows
+
+- **Start work with context** — session startup initializes memory files, refreshes small repo maps, and imports current/recent local session recaps.
+- **Orient future agents** — `<project>/.pi/hybrid-memory/context.md` keeps a compact project briefing with decisions, work items, and repo-map highlights.
+- **Capture durable knowledge** — tools and commands store preferences, decisions, codebase notes, work items, and reusable validation/build recipes.
+- **Keep memory clean** — `/hmemory-health`, `/hmemory-review`, `/hmemory-doctor`, `/hmemory-prune`, and `/hmemory-audit` make stale or noisy memory visible and actionable.
+- **Bootstrap older projects** — `/hmemory-bootstrap` rebuilds the repo map, mines prior local Pi sessions, prunes duplicate recaps, and rolls up older history.
+
+## Install
+
+Install the package from GitHub:
+
+```bash
+pi install git:github.com/feveromo/pi-hybrid-memory
+```
+
+For local development, load a checkout as a Pi package:
+
+```json
+{
+  "packages": [
+    "<path-to-your-local-clone>/pi-hybrid-memory"
+  ]
+}
+```
+
+Then run `/reload`.
+
+Project memory is written under `<project>/.pi/hybrid-memory/`. Add `.pi/` to that project's `.gitignore` if the project does not already ignore Pi runtime state.
+
+## Validation
+
+```bash
+npm test
+npm run test:fixture
+npm run smoke:load
+npm run validate
+```
+
+## Features
 
 - JSONL + Markdown durable memory files, inspectable and editable.
 - User scope: `~/.pi/agent/memory/`.
@@ -18,7 +87,6 @@ It provides a small, inspectable memory layer for Pi agents:
 - Configurable lightweight auto-capture for durable preference prompts as they are submitted, plus compact current-session import/pruning after each agent turn.
 - Secret/path redaction before records are stored or injected, including plain `sk-...`, `sk-ant-...`, and `sk-proj-...` style keys.
 - Parallel-safe mutating hooks, commands, and tools via Pi's file mutation queue, batched JSONL appends, and cached latest-head reads.
-- Retrieved memory is injected as untrusted context, not high-priority instructions.
 - Codebase notes store lightweight file freshness evidence and are marked stale during pruning when referenced files are changed or removed.
 - Opt-in model audit/cleanup through `/hmemory-audit`, using the selected Pi model to propose validated append-only memory changes like dedupe, merge, stale, pin, and rewrite.
 - Pi compaction/branch summaries can be mined into durable memories through Pi session hooks.
@@ -88,37 +156,15 @@ It provides a small, inspectable memory layer for Pi agents:
   state.json
 ```
 
-## Install
+## Project status
 
-Install the package from GitHub:
+`pi-hybrid-memory` is early, active, and intentionally small. It is built from day-to-day maintainer workflows: reopening old projects, carrying decisions across sessions, preserving validation commands, auditing stale context, and keeping private agent memory inspectable.
 
-```bash
-pi install git:github.com/feveromo/pi-hybrid-memory
-```
+Current priorities:
 
-For local development, load a checkout as a Pi package:
-
-```json
-{
-  "packages": [
-    "<path-to-your-local-clone>/pi-hybrid-memory"
-  ]
-}
-```
-
-Then run `/reload`.
-
-Project memory is written under `<project>/.pi/hybrid-memory/`. Add `.pi/` to that project's `.gitignore` if the project does not already ignore Pi runtime state.
-
-## Validation
-
-```bash
-npm test
-npm run test:fixture
-npm run smoke:load
-npm run validate
-```
-
-## Notes / future work
+- expand prompt-injection and redaction regression fixtures
+- add more example workflows for issue triage, release notes, and security review
+- improve retrieval-quality checks for long-running projects
+- keep startup, session import, and prompt injection bounded enough for daily use
 
 Still intentionally simple: no vector DB, no daemon, and no external service by default. `/hmemory-audit` is explicit and uses whatever Pi model/provider you selected, with a redacted bounded packet, targeted filters/paging, optional per-action selection, and append-only validated changes. Normal curation remains append-only; `/hmemory-purge <scoped-id> --force` is the explicit hard-delete escape hatch. Startup/turn auto-refresh is deliberately bounded, compact, local, and lightly configurable through Pi settings; use `/hmemory-bootstrap` for deeper historical backfills.
