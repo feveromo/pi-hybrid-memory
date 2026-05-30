@@ -16,6 +16,17 @@
 
 Use `/hmemory-dashboard full` when you want command/tool/hook details from the repo map. Use `/hmemory-config` to inspect the active tuning loaded from Pi settings. `/hmemory` and `/hmemory-health` show active vs inactive counts so append-only history is not confused with useful current memory.
 
+### Temporarily disable memory
+
+```text
+/hmemory-toggle off
+/hmemory-toggle on
+/hmemory-toggle off --project
+/hmemory-toggle status
+```
+
+Turning memory off disables automatic injection, auto-capture, current-session auto-import, compaction/branch mining, and agent-callable `hybrid_memory_*` tools. It does not delete JSONL records, and slash commands stay available for inspection or re-enabling.
+
 ### Search memory
 
 ```text
@@ -132,7 +143,7 @@ The repo map indexes file paths, file kinds, imports, symbols, commands, tools, 
 /hmemory-context
 ```
 
-The injected memory block warns when the repo map is stale. Run `/hmemory-repomap` or `/hmemory-refresh` after meaningful code changes. Automatic repo-map injection is stricter than manual `/hmemory-repo`: generic prompts are ignored unless they contain a path-like term, exact symbol/command/tool/hook match, or enough distinctive non-generic terms.
+The injected memory block warns when the repo map is stale. Run `/hmemory-repomap` or `/hmemory-refresh` after meaningful code changes. Automatic repo-map injection is stricter than manual `/hmemory-repo`: generic prompts are ignored unless they contain a path-like term, exact symbol/command/tool/hook match, or enough distinctive non-generic terms. Injected repo-map matches are labeled as codebase search hints because they may be noisy or stale, and low-value parser symbols are filtered from display.
 
 ## Session import workflow
 

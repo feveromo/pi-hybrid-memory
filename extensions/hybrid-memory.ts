@@ -50,6 +50,21 @@ const HOME_REPO_NOISE_TOP_LEVEL = new Set([...REPO_NOISE_TOP_LEVEL, "Dev", "go",
 const GENERIC_MEMORY_QUERY_TERMS = new Set([
   "agent", "audit", "code", "context", "display", "docs", "extension", "extensions", "file", "fresh", "implementation", "local", "mcp", "memory", "package", "packages", "pi", "project", "prompt", "repo", "search", "system", "tool", "tools", "user",
 ]);
+const REPO_SYMBOL_NOISE = new Set([
+  "and", "as", "class", "def", "else", "false", "for", "from", "if", "import", "in", "is", "let", "not", "null", "or", "return", "to", "true", "until", "var", "while",
+]);
+const HYBRID_MEMORY_TOOL_NAMES = [
+  "hybrid_memory_remember",
+  "hybrid_memory_search",
+  "hybrid_memory_forget",
+  "hybrid_memory_import_sessions",
+  "hybrid_memory_refresh_context",
+  "hybrid_memory_bootstrap_project",
+  "hybrid_memory_stats",
+  "hybrid_memory_doctor",
+  "hybrid_memory_build_repomap",
+] as const;
+const HYBRID_MEMORY_TOOL_NAME_SET = new Set<string>(HYBRID_MEMORY_TOOL_NAMES);
 
 type MemoryKind = "preference" | "decision" | "project_fact" | "codebase_note" | "recipe" | "work_item" | "session_recap";
 type MemoryScope = "user" | "project";
@@ -122,6 +137,7 @@ type RepoMapFileCacheEntry = {
 };
 
 type HybridMemoryConfig = {
+  enabled: boolean;
   maxInjectChars: number;
   injectSectionLimits: Record<string, number>;
   repoMapFileLimit: number;
@@ -138,6 +154,7 @@ type HybridMemoryConfig = {
 };
 
 const DEFAULT_HYBRID_MEMORY_CONFIG: HybridMemoryConfig = {
+  enabled: true,
   maxInjectChars: MAX_INJECT_CHARS,
   injectSectionLimits: { ...INJECT_SECTION_LIMITS },
   repoMapFileLimit: DEFAULT_REPO_MAP_FILE_LIMIT,
@@ -202,6 +219,8 @@ function mergeHybridMemoryConfig(base: HybridMemoryConfig, raw: unknown): Hybrid
   const prune: Record<string, unknown> = isPlainObject(raw.prune) ? raw.prune : {};
   const compaction: Record<string, unknown> = isPlainObject(raw.compaction) ? raw.compaction : {};
   const autoCapture: Record<string, unknown> = isPlainObject(raw.autoCapture) ? raw.autoCapture : {};
+  if (typeof raw.enabled === "boolean") config.enabled = raw.enabled;
+  if (typeof raw.disabled === "boolean") config.enabled = !raw.disabled;
   config.maxInjectChars = clampSetting(raw.maxInjectChars, config.maxInjectChars, 1000, 30_000);
   config.repoMapFileLimit = clampSetting(raw.repoMapFileLimit ?? repoMap.fileLimit, config.repoMapFileLimit, 100, 20_000);
   config.repoMapReadMaxBytes = clampSetting(raw.repoMapReadMaxBytes ?? repoMap.readMaxBytes, config.repoMapReadMaxBytes, 16_000, 2_000_000);
@@ -238,6 +257,7 @@ function hybridMemoryConfig(cwd: string): HybridMemoryConfig {
 
 function publicHybridMemoryConfig(config: HybridMemoryConfig) {
   return {
+    enabled: config.enabled,
     maxInjectChars: config.maxInjectChars,
     injectSectionLimits: config.injectSectionLimits,
     repoMapFileLimit: config.repoMapFileLimit,
@@ -256,6 +276,60 @@ function publicHybridMemoryConfig(config: HybridMemoryConfig) {
 
 function formatHybridMemoryConfig(cwd: string) {
   return JSON.stringify(publicHybridMemoryConfig(hybridMemoryConfig(cwd)), null, 2);
+}
+
+function hybridMemoryEnabled(cwd: string) {
+  return hybridMemoryConfig(cwd).enabled;
+}
+
+type HybridMemoryToggleTarget = "global" | "project";
+
+function memoryToggleSettingsFile(cwd: string, target: HybridMemoryToggleTarget) {
+  return target === "project"
+    ? join(findProjectRoot(cwd), ".pi", "settings.json")
+    : join(homedir(), ".pi", "agent", "settings.json");
+}
+
+function setHybridMemoryEnabled(cwd: string, enabled: boolean, target: HybridMemoryToggleTarget) {
+  const file = memoryToggleSettingsFile(cwd, target);
+  const settings = readSettingsObject(file) ?? {};
+  const existing = isPlainObject(settings.hybridMemory) ? settings.hybridMemory : {};
+  settings.hybridMemory = { ...existing, enabled };
+  ensureDir(dirname(file));
+  writeFileSync(file, JSON.stringify(settings, null, 2) + "\n", "utf8");
+  return file;
+}
+
+function disabledHybridMemoryToolResult(cwd: string) {
+  return {
+    content: [{ type: "text", text: `Hybrid memory is disabled by settings. Stored JSONL data is unchanged. Use /hmemory-toggle on or set hybridMemory.enabled=true to re-enable it.` }],
+    details: { disabled: true, config: publicHybridMemoryConfig(hybridMemoryConfig(cwd)) },
+  };
+}
+
+function parseMemoryToggleArgs(args: string) {
+  const tokens = args.match(/(?:"[^"]*"|'[^']*'|\S+)/g)?.map(cleanArgToken) ?? [];
+  let target: HybridMemoryToggleTarget = "global";
+  let enabled: boolean | undefined;
+  let status = false;
+  for (const token of tokens) {
+    if (/^(?:--?project|project)$/i.test(token)) target = "project";
+    else if (/^(?:--?global|global|user)$/i.test(token)) target = "global";
+    else if (/^(?:on|enable|enabled|true|1)$/i.test(token)) enabled = true;
+    else if (/^(?:off|disable|disabled|false|0)$/i.test(token)) enabled = false;
+    else if (/^(?:status|show|check)$/i.test(token)) status = true;
+  }
+  return { target, enabled, status: status || enabled === undefined };
+}
+
+function hybridMemoryToggleStatusText(cwd: string) {
+  const config = publicHybridMemoryConfig(hybridMemoryConfig(cwd));
+  return [
+    `hybrid memory is ${config.enabled ? "enabled" : "disabled"}.`,
+    `global settings: ${memoryToggleSettingsFile(cwd, "global")}`,
+    `project settings: ${memoryToggleSettingsFile(cwd, "project")}`,
+    "Use /hmemory-toggle off [--global|--project] to disable automatic injection/capture/import; /hmemory-toggle on to re-enable.",
+  ].join("\n");
 }
 
 function ensureDir(dir: string) {
@@ -652,6 +726,22 @@ function searchTermWeight(term: string) {
   if (/[./:_-]/.test(term)) return 6;
   if (clean.length >= 8) return 4;
   return 2;
+}
+
+function displayRepoSymbols(symbols: string[], max: number) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const symbol of symbols) {
+    const safe = redactSecrets(symbol).trim();
+    const clean = safe.toLowerCase().replace(/^[@\-./:]+|[@\-./:]+$/g, "");
+    if (!clean || REPO_SYMBOL_NOISE.has(clean) || /^\d+$/.test(clean)) continue;
+    if (!/[A-Z_./:-]/.test(safe) && clean.length < 3) continue;
+    if (seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(safe);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 function recordHaystack(r: MemoryRecord) {
@@ -1251,13 +1341,14 @@ function regenerateProjectContext(cwd: string, map = readRepoMap(cwd)) {
   if (map) {
     const stale = repoMapStaleness(cwd, map);
     lines.push("## Repo map", `- Root: ${map.root}`, `- Files: ${map.files.length}`, `- Status: ${stale.stale ? `stale (${stale.reason})` : "fresh"}`);
-    const rich = map.files.filter((f) => !isSensitivePath(f.path) && (f.commands?.length || f.tools?.length || f.hooks?.length || f.symbols.length)).slice(0, 12);
+    const rich = map.files.filter((f) => !isSensitivePath(f.path) && (f.commands?.length || f.tools?.length || f.hooks?.length || displayRepoSymbols(f.symbols, 1).length)).slice(0, 12);
     for (const f of rich) {
+      const symbols = displayRepoSymbols(f.symbols, 16);
       const bits = [
         f.commands?.length ? `commands: ${f.commands.join(", ")}` : "",
         f.tools?.length ? `tools: ${f.tools.join(", ")}` : "",
         f.hooks?.length ? `hooks: ${f.hooks.join(", ")}` : "",
-        f.symbols.length ? `symbols: ${f.symbols.slice(0, 16).join(", ")}` : "",
+        symbols.length ? `symbols: ${symbols.join(", ")}` : "",
       ].filter(Boolean).join("; ");
       lines.push(`- ${f.path}${bits ? ` — ${bits}` : ""}`);
     }
@@ -1315,11 +1406,12 @@ function repoExcerpt(cwd: string, query: string, map = readRepoMap(cwd), automat
     .slice(0, 8);
   if (!ranked.length) return "";
   return ranked.map(({ f }) => {
+    const symbols = displayRepoSymbols(f.symbols, 8);
     const bits = [
       f.commands?.length ? `commands: ${f.commands.slice(0, 6).join(", ")}` : "",
       f.tools?.length ? `tools: ${f.tools.slice(0, 6).join(", ")}` : "",
       f.hooks?.length ? `hooks: ${f.hooks.slice(0, 6).join(", ")}` : "",
-      f.symbols.length ? `symbols: ${f.symbols.slice(0, 8).join(", ")}` : "",
+      symbols.length ? `symbols: ${symbols.join(", ")}` : "",
     ].filter(Boolean).join("; ");
     return `- ${f.path}${bits ? ` — ${bits}` : ""}`;
   }).join("\n");
@@ -2643,9 +2735,12 @@ function dedupeInjectionRecords(records: MemoryRecord[]) {
 function memoryLine(cwd: string, r: MemoryRecord) {
   const maxContent = r.kind === "session_recap" ? 240 : r.kind === "recipe" ? 220 : 320;
   const content = compactText(redactSecrets(displayContent(r)), maxContent);
-  const files = injectedRecordFilePaths(cwd, r, r.kind === "session_recap" ? 3 : r.kind === "recipe" ? 4 : 6);
+  const files = injectedRecordFilePaths(cwd, r, r.kind === "session_recap" ? 3 : r.kind === "recipe" ? 4 : 5);
   const totalDisplayFiles = injectedRecordFilePaths(cwd, r, 24).length;
-  const fileSuffix = files.length ? ` (files: ${files.join(", ")}${totalDisplayFiles > files.length ? ", …" : ""})` : "";
+  const omitted = totalDisplayFiles - files.length;
+  const fileSuffix = files.length
+    ? ` (files: ${files.join(", ")}${omitted > 0 ? `; ${omitted} more path${omitted === 1 ? "" : "s"}` : ""})`
+    : "";
   return `${r.pinned ? "📌 " : ""}${content}${fileSuffix}`;
 }
 
@@ -2671,12 +2766,18 @@ function appendInjectionSection(lines: string[], title: string, itemLines: strin
     added++;
   }
   if (!added) return false;
-  if (truncated && canFitInjectionLines(lines, [...section, "- …truncated", ""], maxChars)) section.push("- …truncated");
+  if (truncated) {
+    const omitted = Math.max(1, itemLines.length - added);
+    const noun = title === "Repo Map Matches" ? "match" : "record";
+    const line = `- …${omitted} additional lower-ranked ${noun}${omitted === 1 ? "" : "s"} omitted`;
+    if (canFitInjectionLines(lines, [...section, line, ""], maxChars)) section.push(line);
+  }
   lines.push(...section, "");
   return true;
 }
 
 function buildInjection(cwd: string, prompt: string) {
+  if (!hybridMemoryEnabled(cwd)) return "";
   const config = hybridMemoryConfig(cwd);
   const safePrompt = redactSecrets(prompt);
   const merged = new Map<string, MemoryRecord>();
@@ -2711,7 +2812,8 @@ function buildInjection(cwd: string, prompt: string) {
   }
   const repo = repoExcerpt(cwd, safePrompt, repoMap, true);
   if (repo) {
-    any = appendInjectionSection(lines, "Repo Map Matches", repo.split("\n"), config.maxInjectChars, 8) || any;
+    const repoLines = ["Codebase search hints from the current working tree; may be noisy or stale.", ...repo.split("\n")];
+    any = appendInjectionSection(lines, "Repo Map Matches", repoLines, config.maxInjectChars, 9) || any;
   }
   if (!any) return "";
   const text = lines.join("\n").trim();
@@ -3555,7 +3657,29 @@ async function generateMemoryAudit(cwd: string, ctx: any, filters: Partial<Memor
 }
 
 export default function (pi: ExtensionAPI) {
+  function applyHybridMemoryToolState(ctx: any, activate = false) {
+    if (typeof (pi as any).getActiveTools !== "function" || typeof (pi as any).setActiveTools !== "function") return;
+    const active = ((pi as any).getActiveTools() ?? []) as string[];
+    if (!hybridMemoryEnabled(ctx.cwd)) {
+      const next = active.filter((name) => !HYBRID_MEMORY_TOOL_NAME_SET.has(name));
+      if (next.length !== active.length) (pi as any).setActiveTools(next);
+      return;
+    }
+    if (!activate) return;
+    const allTools = typeof (pi as any).getAllTools === "function" ? ((pi as any).getAllTools() ?? []).map((tool: any) => tool.name) : HYBRID_MEMORY_TOOL_NAMES;
+    const all = new Set<string>(allTools);
+    const next = new Set(active);
+    for (const name of HYBRID_MEMORY_TOOL_NAMES) if (all.has(name)) next.add(name);
+    const nextList = [...next];
+    if (nextList.length !== active.length || nextList.some((name, index) => name !== active[index])) (pi as any).setActiveTools(nextList);
+  }
+
   function updateMemoryChrome(ctx: any) {
+    if (!hybridMemoryEnabled(ctx.cwd)) {
+      ctx.ui.setStatus("hybrid-memory", `${ctx.ui.theme.fg("muted", "🧠")} ${ctx.ui.theme.fg("dim", "off")}`);
+      ctx.ui.setStatus("hybrid-memory-compact", undefined);
+      return;
+    }
     const counts = activeCounts(ctx.cwd);
     const stale = repoMapStalenessCached(ctx.cwd);
     const icon = stale.stale ? ctx.ui.theme.fg("warning", "🧠") : ctx.ui.theme.fg("accent", "🧠");
@@ -3573,6 +3697,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     clearRemovedWidget(ctx);
+    applyHybridMemoryToolState(ctx);
+    if (!hybridMemoryEnabled(ctx.cwd)) {
+      updateMemoryChrome(ctx);
+      return;
+    }
     try {
       await withHybridMemoryMutation(ctx.cwd, async () => {
         const p = paths(ctx.cwd);
@@ -3597,6 +3726,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_compact", async (event: any, ctx) => {
+    if (!hybridMemoryEnabled(ctx.cwd)) return;
     const entry = event.compactionEntry ?? event.entry ?? event.compaction;
     const result = await withHybridMemoryMutation(ctx.cwd, async () => mineSummary(ctx.cwd, entry?.summary, "compaction", { entryId: entry?.id, firstKeptEntryId: entry?.firstKeptEntryId, tokensBefore: entry?.tokensBefore }));
     if (result.written) {
@@ -3606,6 +3736,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_tree", async (event: any, ctx) => {
+    if (!hybridMemoryEnabled(ctx.cwd)) return;
     const entry = event.summaryEntry ?? event.branchSummaryEntry ?? event.summary;
     const result = await withHybridMemoryMutation(ctx.cwd, async () => mineSummary(ctx.cwd, entry?.summary, "branch_summary", { entryId: entry?.id, fromId: entry?.fromId, newLeafId: event.newLeafId, oldLeafId: event.oldLeafId }));
     if (result.written) {
@@ -3615,6 +3746,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    applyHybridMemoryToolState(ctx);
+    if (!hybridMemoryEnabled(ctx.cwd)) return;
     const capture = await withHybridMemoryMutation(ctx.cwd, async () => autoCapturePromptMemory(ctx.cwd, event.prompt));
     if (capture.written) updateMemoryChrome(ctx);
     const block = buildInjection(ctx.cwd, event.prompt);
@@ -3623,6 +3756,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    if (!hybridMemoryEnabled(ctx.cwd)) return;
     const result = await withHybridMemoryMutation(ctx.cwd, async () => autoImportCurrentSession(ctx.cwd, ctx.sessionManager.getSessionFile?.()));
     if (result.written) updateMemoryChrome(ctx);
   });
@@ -3638,6 +3772,26 @@ export default function (pi: ExtensionAPI) {
     description: "Show active hybrid-memory tuning from Pi settings",
     handler: async (_args, ctx) => {
       ctx.ui.notify(`hybrid memory config:\n${formatHybridMemoryConfig(ctx.cwd)}`, "info");
+    },
+  });
+
+  pi.registerCommand("hmemory-toggle", {
+    description: "Enable/disable automatic hybrid memory: /hmemory-toggle on|off [--global|--project]",
+    handler: async (args, ctx) => {
+      const parsed = parseMemoryToggleArgs(args);
+      if (parsed.status) return ctx.ui.notify(hybridMemoryToggleStatusText(ctx.cwd), "info");
+      const requested = Boolean(parsed.enabled);
+      const file = setHybridMemoryEnabled(ctx.cwd, requested, parsed.target);
+      const effective = hybridMemoryEnabled(ctx.cwd);
+      applyHybridMemoryToolState(ctx, effective);
+      updateMemoryChrome(ctx);
+      const overrideNote = effective === requested ? "" : ` Effective status is still ${effective ? "enabled" : "disabled"} because another settings layer overrides this ${parsed.target} value.`;
+      ctx.ui.notify(
+        requested
+          ? `hybrid memory enabled (${parsed.target}; ${file}). Automatic injection/capture/import will run on future turns.${overrideNote}`
+          : `hybrid memory disabled (${parsed.target}; ${file}). Automatic injection/capture/import and hybrid-memory tools are off; stored JSONL data is retained. Use /hmemory-toggle on to re-enable.${overrideNote}`,
+        requested ? "success" : "info",
+      );
     },
   });
 
@@ -4031,6 +4185,7 @@ export default function (pi: ExtensionAPI) {
       pinned: Type.Optional(Type.Boolean()),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       return withHybridMemoryMutation(ctx.cwd, async () => {
         const ts = nowIso();
         const scope = (params.scope ?? "project") as MemoryScope;
@@ -4096,6 +4251,7 @@ export default function (pi: ExtensionAPI) {
       includeInactive: Type.Optional(Type.Boolean()),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       const options: SearchRecordsOptions = {
         scope: params.scope as MemoryScope | undefined,
         kind: params.kind as MemoryKind | undefined,
@@ -4145,6 +4301,7 @@ export default function (pi: ExtensionAPI) {
       tombstoneNote: Type.Optional(Type.String()),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       return withHybridMemoryMutation(ctx.cwd, async () => {
         const status = (params.status ?? "stale") as MemoryStatus;
         const patch: Partial<MemoryRecord> = { status };
@@ -4190,6 +4347,7 @@ export default function (pi: ExtensionAPI) {
       projectOnly: Type.Optional(Type.Boolean()),
     }),
     async execute(_id, params, _signal, onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       onUpdate?.({ content: [{ type: "text", text: "Importing session memory..." }] });
       return withHybridMemoryMutation(ctx.cwd, async () => {
         const files = params.sessionPath
@@ -4227,6 +4385,7 @@ export default function (pi: ExtensionAPI) {
       importSessions: Type.Optional(Type.Boolean()),
     }),
     async execute(_id, params, _signal, onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       onUpdate?.({ content: [{ type: "text", text: "Refreshing repo map..." }] });
       return withHybridMemoryMutation(ctx.cwd, async () => {
         const map = buildRepoMap(ctx.cwd);
@@ -4267,6 +4426,7 @@ export default function (pi: ExtensionAPI) {
       maxSessions: Type.Optional(Type.Number({ minimum: 10, maximum: 500 })),
     }),
     async execute(_id, params, _signal, onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       onUpdate?.({ content: [{ type: "text", text: "Bootstrapping project memory from local sessions..." }] });
       return withHybridMemoryMutation(ctx.cwd, async () => {
         const result = bootstrapProjectMemory(ctx.cwd, boundedNumber(params.maxSessions, 250, 10, 500));
@@ -4296,6 +4456,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show hybrid memory record counts and storage paths.",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       const p = paths(ctx.cwd);
       const stats = memoryStatsSnapshot(ctx.cwd);
       const config = publicHybridMemoryConfig(hybridMemoryConfig(ctx.cwd));
@@ -4337,6 +4498,7 @@ export default function (pi: ExtensionAPI) {
       maxActiveRecaps: Type.Optional(Type.Number({ minimum: 3, maximum: 100 })),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       return withHybridMemoryMutation(ctx.cwd, async () => {
         const mode = (params.mode ?? "preview") as "preview" | "apply";
         const max = boundedNumber(params.maxActiveRecaps, hybridMemoryConfig(ctx.cwd).pruneActiveSessionRecaps, 3, 100);
@@ -4381,6 +4543,7 @@ export default function (pi: ExtensionAPI) {
     description: "Build or refresh lightweight repo map cache for the current project.",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, onUpdate, ctx) {
+      if (!hybridMemoryEnabled(ctx.cwd)) return disabledHybridMemoryToolResult(ctx.cwd);
       onUpdate?.({ content: [{ type: "text", text: "Building repo map..." }] });
       return withHybridMemoryMutation(ctx.cwd, async () => {
         const map = buildRepoMap(ctx.cwd);
