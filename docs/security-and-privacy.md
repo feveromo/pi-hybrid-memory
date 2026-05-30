@@ -2,6 +2,8 @@
 
 `pi-hybrid-memory` is designed to keep memory local and inspectable, but it still stores derived context from prompts, sessions, and repo metadata. Treat the memory files as private user data.
 
+For vulnerability reporting scope and responsible disclosure guidance, see [../SECURITY.md](../SECURITY.md).
+
 ## Local storage only
 
 By default, records are written to local files:
