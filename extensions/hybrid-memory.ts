@@ -53,6 +53,7 @@ const GENERIC_MEMORY_QUERY_TERMS = new Set([
 const REPO_SYMBOL_NOISE = new Set([
   "and", "as", "class", "def", "else", "false", "for", "from", "if", "import", "in", "is", "let", "not", "null", "or", "return", "to", "true", "until", "var", "while",
 ]);
+const HYBRID_MEMORY_CONTEXT_TYPE = "hybrid-memory-context";
 const HYBRID_MEMORY_TOOL_NAMES = [
   "hybrid_memory_remember",
   "hybrid_memory_search",
@@ -910,7 +911,8 @@ type SearchRecordsOptions = { scope?: MemoryScope; kind?: MemoryKind; status?: S
 type MemoryStatsSnapshot = ReturnType<typeof memoryStatsSnapshot>;
 type MemoryDoctorCandidate = { record: MemoryRecord; action: "mark_stale"; reason: string };
 type MemoryScopeHint = { record: MemoryRecord; suggestedScope: MemoryScope; reason: string };
-type MemoryDoctorPlan = { generatedAt: string; maxActiveSessionRecaps: number; before: MemoryStatsSnapshot; candidates: MemoryDoctorCandidate[]; scopeHints: MemoryScopeHint[] };
+type MemoryReviewHint = { record: MemoryRecord; reason: string; suggestion: string };
+type MemoryDoctorPlan = { generatedAt: string; maxActiveSessionRecaps: number; before: MemoryStatsSnapshot; candidates: MemoryDoctorCandidate[]; scopeHints: MemoryScopeHint[]; reviewHints: MemoryReviewHint[] };
 type MemoryDoctorApplyResult = { applied: number; updated: string[]; skipped: string[] };
 
 type PruneResult = { staleMarked: number; rollupCreated?: MemoryRecord; duplicateGroups: number };
@@ -1114,6 +1116,45 @@ function gitListFiles(root: string, args: string[]) {
     .filter(Boolean);
 }
 
+function readTextWindow(file: string, start: number, maxBytes: number) {
+  if (maxBytes <= 0) return "";
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    const buffer = Buffer.alloc(maxBytes);
+    const bytes = readSync(fd, buffer, 0, maxBytes, Math.max(0, start));
+    return buffer.subarray(0, bytes).toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* ignore close errors */ }
+    }
+  }
+}
+
+function readRepoMapContent(file: string, size: number, maxBytes: number) {
+  if (maxBytes <= 0) return "";
+  if (size <= maxBytes) {
+    try { return readFileSync(file, "utf8"); } catch { return ""; }
+  }
+  const windowBytes = Math.max(1024, Math.floor(maxBytes / 3));
+  const boundaryPadding = Math.min(2048, Math.max(256, Math.floor(windowBytes / 8)));
+  const rawRanges = [0, Math.floor((size - windowBytes) / 2), size - windowBytes]
+    .map((start) => ({ start: Math.max(0, start - boundaryPadding), end: Math.min(size, Math.max(0, start) + windowBytes + boundaryPadding) }))
+    .filter((range) => range.end > range.start)
+    .sort((a, b) => a.start - b.start);
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const range of rawRanges) {
+    const previous = ranges.at(-1);
+    if (previous && range.start <= previous.end) previous.end = Math.max(previous.end, range.end);
+    else ranges.push({ ...range });
+  }
+  return ranges
+    .map((range, index) => `${index ? "\n\n/* repo map: omitted middle of large file */\n\n" : ""}${readTextWindow(file, range.start, range.end - range.start)}`)
+    .join("");
+}
+
 function isRepoMappableFile(path: string) {
   return !isSensitivePath(path)
     && !isNoisyRepoPath(path)
@@ -1156,10 +1197,7 @@ function buildRepoMap(cwd: string): RepoMap {
     .map((p) => {
       const abs = join(root, p);
       const size = existsSync(abs) ? statSync(abs).size : 0;
-      let content = "";
-      if (size <= config.repoMapReadMaxBytes) {
-        try { content = readFileSync(abs, "utf8"); } catch { content = ""; }
-      }
+      const content = readRepoMapContent(abs, size, config.repoMapReadMaxBytes);
       return { path: p, kind: fileKind(p), ...extractRepoDetails(p, content), imports: extractImports(content), size };
     });
   const map: RepoMap = { schemaVersion: 1, root, generatedAt: nowIso(), files };
@@ -1262,6 +1300,26 @@ function scopeMismatchHints(cwd: string, records = activeRecords(latestRecordsFo
     .map((x) => ({ record: x.record, suggestedScope: x.hint.suggestedScope, reason: x.hint.reason }));
 }
 
+function reviewHintReason(cwd: string, r: MemoryRecord): MemoryReviewHint | undefined {
+  if (!isActiveRecord(r) || r.pinned || r.kind !== "preference") return undefined;
+  const text = `${r.subject} ${r.content}`.replace(/\s+/g, " ").trim();
+  const source = r.tags ?? [];
+  const summaryMined = source.includes("summary-mined") || source.includes("compaction") || source.includes("branch_summary");
+  const thin = r.content.length <= 90 && r.subject.length <= 90;
+  if (summaryMined && thin) return { record: r, reason: "thin-summary-mined-preference", suggestion: "review, rewrite with more context, pin if durable, or mark stale if it was a one-off session instruction" };
+  const root = findProjectRoot(cwd);
+  if ((source.includes("auto-captured") || source.includes("session-import")) && /(?:^|\s)(?:\.\/|\.\.\/|\/[^\s`]+|[\w.-]+\/[\w./-]+)/.test(text) && !text.includes(root)) {
+    return { record: r, reason: "path-specific-user-preference", suggestion: "consider moving to a project-local decision/work item, rewriting globally, or marking stale" };
+  }
+  return undefined;
+}
+
+function memoryReviewHints(cwd: string, records = activeRecords(latestRecordsForCwd(cwd))): MemoryReviewHint[] {
+  return records
+    .map((record) => reviewHintReason(cwd, record))
+    .filter((hint): hint is MemoryReviewHint => Boolean(hint));
+}
+
 function duplicateSubjectHints(records: MemoryRecord[], limit = 8) {
   return [...records.reduce((m, r) => m.set(`${r.scope}:${r.kind}:${r.subject}`, (m.get(`${r.scope}:${r.kind}:${r.subject}`) ?? 0) + 1), new Map<string, number>()).entries()]
     .filter(([, count]) => count > 1)
@@ -1290,6 +1348,7 @@ function memoryStatsSnapshot(cwd: string) {
   }
   const staleCandidateKeys = new Set(memoryCurationCandidates(cwd, hybridMemoryConfig(cwd).pruneActiveSessionRecaps).map((candidate) => recordKey(candidate.record)));
   const scopeHints = scopeMismatchHints(cwd, active);
+  const reviewHints = memoryReviewHints(cwd, active);
   return {
     total: records.length,
     active: active.length,
@@ -1305,6 +1364,7 @@ function memoryStatsSnapshot(cwd: string) {
     duplicateSubjects: duplicateSubjectHints(active),
     staleCandidateCount: staleCandidateKeys.size,
     scopeMismatchCount: scopeHints.length,
+    reviewHintCount: reviewHints.length,
     repoMap: repoMapStaleness(cwd),
   };
 }
@@ -1418,6 +1478,7 @@ function repoExcerpt(cwd: string, query: string, map = readRepoMap(cwd), automat
 }
 
 function textParts(content: unknown): string[] {
+  if (typeof content === "string") return [content];
   if (!Array.isArray(content)) return [];
   return content.flatMap((part) => {
     if (part && typeof part === "object" && "type" in part && (part as { type?: string }).type === "text") {
@@ -1546,7 +1607,7 @@ function autoImportCurrentSession(cwd: string, sessionFile?: string) {
   if (!sessionFile || !existsSync(sessionFile)) return { scanned: 0, extracted: 0, written: 0, sessionFiles: [] as string[] };
   try {
     if (statSync(sessionFile).size > SESSION_IMPORT_MAX_BYTES) return { scanned: 0, extracted: 0, written: 0, sessionFiles: [sessionFile] };
-    const result = importSessions(cwd, [sessionFile]);
+    const result = importSessions(cwd, [sessionFile], { includeCommandRecipes: false });
     pruneMemory(cwd, hybridMemoryConfig(cwd).autoPruneActiveSessionRecaps);
     return result;
   } catch {
@@ -1719,7 +1780,9 @@ function listSessionFiles(limit = 10, projectCwd?: string) {
     .map((x) => x.file);
 }
 
-function extractSessionRecords(sessionFile: string, importCwd: string): MemoryRecord[] {
+type SessionImportOptions = { includeCommandRecipes?: boolean };
+
+function extractSessionRecords(sessionFile: string, importCwd: string, options: SessionImportOptions = {}): MemoryRecord[] {
   const entries = readJsonlObjects(sessionFile) as Array<Record<string, unknown>>;
   if (!entries.length) return [];
   const header = entries.find((e) => e.type === "session") as { cwd?: string; timestamp?: string; id?: string } | undefined;
@@ -1793,7 +1856,8 @@ function extractSessionRecords(sessionFile: string, importCwd: string): MemoryRe
     });
   }
 
-  const projectCommands = conciseList([...new Set([...commandHints].map(usefulProjectCommandSnippet).filter((cmd): cmd is string => Boolean(cmd)))], 5, 140);
+  const includeCommandRecipes = options.includeCommandRecipes ?? true;
+  const projectCommands = includeCommandRecipes ? conciseList([...new Set([...commandHints].map(usefulProjectCommandSnippet).filter((cmd): cmd is string => Boolean(cmd)))], 5, 140) : [];
   if (projectCommands.length && sameProject(importCwd, sessionCwd)) {
     records.push({
       id: stableId("recipe", `commands from ${subjectBase}`, `${sessionFile}:commands`),
@@ -1836,12 +1900,12 @@ function extractSessionRecords(sessionFile: string, importCwd: string): MemoryRe
   return records;
 }
 
-function importSessions(cwd: string, sessionFiles: string[]) {
+function importSessions(cwd: string, sessionFiles: string[], options: SessionImportOptions = {}) {
   let scanned = 0;
   const records: MemoryRecord[] = [];
   for (const file of sessionFiles) {
     scanned++;
-    records.push(...extractSessionRecords(file, cwd));
+    records.push(...extractSessionRecords(file, cwd, options));
   }
   const result = appendRecordsBatch(cwd, records);
   return { scanned, extracted: records.length, written: result.written, sessionFiles };
@@ -2093,6 +2157,7 @@ function memoryDoctorPlan(cwd: string, maxActiveSessionRecaps = hybridMemoryConf
     before: memoryStatsSnapshot(cwd),
     candidates: memoryCurationCandidates(cwd, maxActiveSessionRecaps),
     scopeHints: scopeMismatchHints(cwd, active),
+    reviewHints: memoryReviewHints(cwd, active),
   };
 }
 
@@ -2130,7 +2195,7 @@ function formatMemoryStatsText(stats: MemoryStatsSnapshot, p?: ReturnType<typeof
     `Hybrid memory: ${stats.active} active / ${stats.total} total heads`,
     `${formatScopeStatusLine("user", stats.statusByScope.user)}; ${formatScopeStatusLine("project", stats.statusByScope.project)}`,
     `inactive: stale ${stats.byStatus.stale}, superseded ${stats.byStatus.superseded}, done ${stats.byStatus.done}; pinned: ${stats.pinnedActive} active${stats.pinnedInactive ? `, ${stats.pinnedInactive} inactive` : ""}`,
-    `hygiene: ${stats.duplicateSubjects.length} duplicate subject group${stats.duplicateSubjects.length === 1 ? "" : "s"}; ${stats.staleCandidateCount} stale/noisy candidate${stats.staleCandidateCount === 1 ? "" : "s"}; ${stats.scopeMismatchCount} scope review hint${stats.scopeMismatchCount === 1 ? "" : "s"}`,
+    `hygiene: ${stats.duplicateSubjects.length} duplicate subject group${stats.duplicateSubjects.length === 1 ? "" : "s"}; ${stats.staleCandidateCount} stale/noisy candidate${stats.staleCandidateCount === 1 ? "" : "s"}; ${stats.scopeMismatchCount} scope review hint${stats.scopeMismatchCount === 1 ? "" : "s"}; ${stats.reviewHintCount} preference review hint${stats.reviewHintCount === 1 ? "" : "s"}`,
     `repo map: ${stats.repoMap.stale ? `stale (${stats.repoMap.reason})` : "fresh"}`,
   ];
   if (p) lines.push(`user: ${p.user}`, `project: ${p.project}`);
@@ -2145,6 +2210,7 @@ function formatMemoryDoctorReport(input: { plan: MemoryDoctorPlan; applyResult?:
     `Mode: ${applyResult ? "apply" : "preview"}`,
     `Safe cleanup candidates: ${plan.candidates.length}`,
     `Scope review hints: ${plan.scopeHints.length}`,
+    `Preference review hints: ${plan.reviewHints.length}`,
     `Max active session recaps: ${plan.maxActiveSessionRecaps}`,
     "",
     "## Before",
@@ -2162,6 +2228,12 @@ function formatMemoryDoctorReport(input: { plan: MemoryDoctorPlan; applyResult?:
     lines.push(`- review ${recordKey(hint.record)} [${hint.record.kind}] → maybe ${hint.suggestedScope}: ${hint.reason}`);
   }
   if (plan.scopeHints.length > 40) lines.push(`- … ${plan.scopeHints.length - 40} more scope hints omitted from this report.`);
+  lines.push("", "## Preference review hints");
+  if (!plan.reviewHints.length) lines.push("No low-context active preferences need manual review.");
+  for (const hint of plan.reviewHints.slice(0, 40)) {
+    lines.push(`- review ${recordKey(hint.record)} “${redactSecrets(compactText(hint.record.subject, 90))}” — ${hint.reason}; ${hint.suggestion}`);
+  }
+  if (plan.reviewHints.length > 40) lines.push(`- … ${plan.reviewHints.length - 40} more preference review hints omitted from this report.`);
   if (applyResult) {
     lines.push("", "## Apply result", `Applied: ${applyResult.applied}`, `Skipped: ${applyResult.skipped.length}`);
     if (applyResult.updated.length) lines.push(`Updated: ${applyResult.updated.join(", ")}`);
@@ -2324,7 +2396,16 @@ function cheapStartupRefresh(cwd: string, currentSession?: string) {
 
   const files = [...new Set([...(currentSession ? [currentSession] : []), ...listProjectSessionFilesCheap(cwd, 2)])]
     .filter((f) => existsSync(f) && statSync(f).size <= SESSION_IMPORT_MAX_BYTES);
-  const sessions = importSessions(cwd, files);
+  const currentFiles = currentSession ? files.filter((f) => f === currentSession) : [];
+  const recentFiles = currentSession ? files.filter((f) => f !== currentSession) : files;
+  const currentSessions = importSessions(cwd, currentFiles, { includeCommandRecipes: false });
+  const recentSessions = importSessions(cwd, recentFiles);
+  const sessions = {
+    scanned: currentSessions.scanned + recentSessions.scanned,
+    extracted: currentSessions.extracted + recentSessions.extracted,
+    written: currentSessions.written + recentSessions.written,
+    sessionFiles: [...currentSessions.sessionFiles, ...recentSessions.sessionFiles],
+  };
   const prune = pruneMemory(cwd, config.autoPruneActiveSessionRecaps);
   updateProjectState(cwd, {
     lastStartupRefreshAt: nowIso(),
@@ -2776,6 +2857,16 @@ function appendInjectionSection(lines: string[], title: string, itemLines: strin
   return true;
 }
 
+function latestUserPromptFromMessages(messages: Array<Record<string, unknown>>) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message?.role !== "user") continue;
+    const text = textParts(message.content).join("\n").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
 function buildInjection(cwd: string, prompt: string) {
   if (!hybridMemoryEnabled(cwd)) return "";
   const config = hybridMemoryConfig(cwd);
@@ -3181,6 +3272,8 @@ function recordAuditBlock(cwd: string, r: MemoryRecord) {
   const files = (sanitizeFilePaths(r.filePaths) ?? []).slice(0, 8).join(", ");
   const symbols = (r.symbols ?? []).slice(0, 8).join(", ");
   const hygiene = staleReasonForMemory(cwd, r);
+  const scopeHint = scopeMismatchReason(cwd, r);
+  const reviewHint = reviewHintReason(cwd, r);
   return [
     `### ${recordKey(r)}`,
     `scope: ${r.scope}`,
@@ -3195,6 +3288,8 @@ function recordAuditBlock(cwd: string, r: MemoryRecord) {
     files ? `files: ${files}` : "",
     symbols ? `symbols: ${redactSecrets(symbols)}` : "",
     hygiene ? `localHygieneFlag: ${hygiene}` : "",
+    scopeHint ? `scopeReviewHint: maybe ${scopeHint.suggestedScope} — ${scopeHint.reason}` : "",
+    reviewHint ? `preferenceReviewHint: ${reviewHint.reason} — ${reviewHint.suggestion}` : "",
     fileAuditHints(cwd, r),
   ].filter(Boolean).join("\n");
 }
@@ -3217,6 +3312,10 @@ function buildMemoryAuditPacket(cwd: string, filters: Partial<MemoryAuditFilters
   const map = readRepoMap(cwd);
   const repo = repoMapStaleness(cwd, map);
   const duplicateHints = health.duplicateSubjects.map(([key, count]) => `${key} x${count}`).join("; ") || "none";
+  const scopeHints = scopeMismatchHints(cwd, candidates).slice(0, 8);
+  const preferenceHints = memoryReviewHints(cwd, candidates).slice(0, 8);
+  const scopeHintText = scopeHints.map((hint) => `${recordKey(hint.record)} -> maybe ${hint.suggestedScope} (${hint.reason})`).join("; ") || "none";
+  const preferenceHintText = preferenceHints.map((hint) => `${recordKey(hint.record)} (${hint.reason})`).join("; ") || "none";
   const lines = [
     "# Hybrid Memory Audit Packet",
     "",
@@ -3228,6 +3327,8 @@ function buildMemoryAuditPacket(cwd: string, filters: Partial<MemoryAuditFilters
     `Matching active records: ${candidates.length}; skipped before page: ${skippedBefore}`,
     `Repo map: ${repo.stale ? `stale (${repo.reason})` : "fresh"}${map ? `; files ${map.files.length}` : ""}`,
     `Duplicate subject hints: ${duplicateHints}`,
+    `Scope review hints: ${scopeHintText}`,
+    `Preference review hints: ${preferenceHintText}`,
     "",
     "## Records",
   ];
@@ -3551,9 +3652,13 @@ function buildAuditActionReviewLines(audit: MemoryAuditResult, selected: number,
   const divider = () => row(warp.faint("─".repeat(inner)));
   const chosen = enabled.size;
   const title = `${warp.pink("✺")} ${warp.cyan(bold("Memory Audit Actions"))} ${warp.dim(`${chosen}/${actions.length} selected`)}`;
+  const recordText = `${audit.recordsAudited}/${audit.totalEligible} records${audit.moreRecords ? ` • ${audit.moreRecords} more` : ""}`;
+  const reportText = compactText(audit.reportPath, Math.max(24, inner - 18));
   const lines = [
     border("╭", "─", "╮"),
     row(`${title}  ${warp.faint(auditFilterLabel(audit.filters))}`),
+    row(`${warp.dim("model")} ${warp.cyan(audit.model)}  ${warp.dim("records")} ${warp.green(recordText)}`),
+    row(`${warp.dim("report")} ${warp.faint(reportText)}`),
     row(warp.dim("↑/k ↓/j move   space toggle   a all   n none   enter apply selected   q cancel")),
     divider(),
   ];
@@ -3657,6 +3762,8 @@ async function generateMemoryAudit(cwd: string, ctx: any, filters: Partial<Memor
 }
 
 export default function (pi: ExtensionAPI) {
+  const lastPromptByCwd = new Map<string, string>();
+
   function applyHybridMemoryToolState(ctx: any, activate = false) {
     if (typeof (pi as any).getActiveTools !== "function" || typeof (pi as any).setActiveTools !== "function") return;
     const active = ((pi as any).getActiveTools() ?? []) as string[];
@@ -3675,22 +3782,21 @@ export default function (pi: ExtensionAPI) {
   }
 
   function updateMemoryChrome(ctx: any) {
+    ctx.ui.setStatus("hybrid-memory", undefined);
     if (!hybridMemoryEnabled(ctx.cwd)) {
-      ctx.ui.setStatus("hybrid-memory", `${ctx.ui.theme.fg("muted", "🧠")} ${ctx.ui.theme.fg("dim", "off")}`);
-      ctx.ui.setStatus("hybrid-memory-compact", undefined);
+      ctx.ui.setStatus("hybrid-memory-compact", `${ctx.ui.theme.fg("muted", "🧠")} ${ctx.ui.theme.fg("dim", "off")}`);
       return;
     }
     const counts = activeCounts(ctx.cwd);
     const stale = repoMapStalenessCached(ctx.cwd);
     const icon = stale.stale ? ctx.ui.theme.fg("warning", "🧠") : ctx.ui.theme.fg("accent", "🧠");
-    const active = `${ctx.ui.theme.fg("success", String(counts.active))} ${ctx.ui.theme.fg("dim", "active")}`;
+    const active = `${icon}${ctx.ui.theme.fg("success", String(counts.active))} ${ctx.ui.theme.fg("dim", "active")}`;
     const user = counts.user ? `${ctx.ui.theme.fg("muted", String(counts.user))} ${ctx.ui.theme.fg("dim", "user")}` : "";
     const project = counts.project ? `${ctx.ui.theme.fg("accent", String(counts.project))} ${ctx.ui.theme.fg("dim", "project")}` : "";
-    const scopes = [user, project].filter(Boolean).join(" • ");
-    const pinned = counts.pinned ? ` • ${ctx.ui.theme.fg("warning", `📌 ${counts.pinned} pinned`)}` : "";
-    const repo = stale.stale ? ctx.ui.theme.fg("warning", "repo stale") : ctx.ui.theme.fg("success", "repo fresh");
-    ctx.ui.setStatus("hybrid-memory", `${icon} ${active}${scopes ? ` • ${scopes}` : ""}${pinned} • ${repo}`);
-    ctx.ui.setStatus("hybrid-memory-compact", undefined);
+    const scopes = [user, project].filter(Boolean).join("/");
+    const pinned = counts.pinned ? ctx.ui.theme.fg("warning", `📌${counts.pinned} pinned`) : "";
+    const repo = stale.stale ? ctx.ui.theme.fg("warning", "stale") : ctx.ui.theme.fg("success", "fresh");
+    ctx.ui.setStatus("hybrid-memory-compact", [active, scopes, pinned, repo].filter(Boolean).join(" "));
   }
 
   const clearRemovedWidget = (ctx: any) => ctx.ui.setWidget?.("hybrid-memory", undefined);
@@ -3747,12 +3853,20 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     applyHybridMemoryToolState(ctx);
+    lastPromptByCwd.set(ctx.cwd, event.prompt);
     if (!hybridMemoryEnabled(ctx.cwd)) return;
     const capture = await withHybridMemoryMutation(ctx.cwd, async () => autoCapturePromptMemory(ctx.cwd, event.prompt));
     if (capture.written) updateMemoryChrome(ctx);
-    const block = buildInjection(ctx.cwd, event.prompt);
-    if (!block) return;
-    return { systemPrompt: event.systemPrompt + block };
+  });
+
+  pi.on("context", async (event, ctx) => {
+    const messages = (event.messages as Array<Record<string, unknown>>).filter((m) => m.customType !== HYBRID_MEMORY_CONTEXT_TYPE);
+    if (!hybridMemoryEnabled(ctx.cwd)) return messages.length === event.messages.length ? undefined : { messages: messages as any };
+    const block = buildInjection(ctx.cwd, latestUserPromptFromMessages(messages) || lastPromptByCwd.get(ctx.cwd) || "");
+    if (!block) return messages.length === event.messages.length ? undefined : { messages: messages as any };
+    return {
+      messages: [{ role: "custom", customType: HYBRID_MEMORY_CONTEXT_TYPE, content: block.trim(), display: false, timestamp: Date.now() }, ...messages] as any,
+    };
   });
 
   pi.on("agent_end", async (_event, ctx) => {
@@ -3942,10 +4056,11 @@ export default function (pi: ExtensionAPI) {
         }
         const report = formatMemoryDoctorReport({ plan, applyResult, after });
         const reportPath = writeMemoryDoctorReport(ctx.cwd, report, parsed.mode);
-        updateProjectState(ctx.cwd, { lastDoctorAt: nowIso(), lastDoctorPath: reportPath, lastDoctorCandidates: plan.candidates.length, lastDoctorScopeHints: plan.scopeHints.length });
+        updateProjectState(ctx.cwd, { lastDoctorAt: nowIso(), lastDoctorPath: reportPath, lastDoctorCandidates: plan.candidates.length, lastDoctorScopeHints: plan.scopeHints.length, lastDoctorReviewHints: plan.reviewHints.length });
         const noun = plan.candidates.length === 1 ? "candidate" : "candidates";
         const scopeNoun = plan.scopeHints.length === 1 ? "hint" : "hints";
-        ctx.ui.notify(`memory doctor ${parsed.mode}: ${plan.candidates.length} safe cleanup ${noun}; ${plan.scopeHints.length} scope ${scopeNoun}${applyResult ? `; applied ${applyResult.applied}` : ""}; report ${reportPath}`, parsed.mode === "apply" && applyResult?.applied ? "success" : "info");
+        const reviewNoun = plan.reviewHints.length === 1 ? "hint" : "hints";
+        ctx.ui.notify(`memory doctor ${parsed.mode}: ${plan.candidates.length} safe cleanup ${noun}; ${plan.scopeHints.length} scope ${scopeNoun}; ${plan.reviewHints.length} preference review ${reviewNoun}${applyResult ? `; applied ${applyResult.applied}` : ""}; report ${reportPath}`, parsed.mode === "apply" && applyResult?.applied ? "success" : "info");
       });
       updateMemoryChrome(ctx);
     },
@@ -4492,7 +4607,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "hybrid_memory_doctor",
     label: "Hybrid Doctor",
-    description: "Preview or apply deterministic hybrid-memory cleanup: active/inactive counts, duplicate/noisy stale candidates, scope hints, and a report file.",
+    description: "Preview or apply deterministic hybrid-memory cleanup: active/inactive counts, duplicate/noisy stale candidates, scope/preference review hints, and a report file.",
     parameters: Type.Object({
       mode: Type.Optional(StringEnum(doctorModeEnum)),
       maxActiveRecaps: Type.Optional(Type.Number({ minimum: 3, maximum: 100 })),
@@ -4512,10 +4627,10 @@ export default function (pi: ExtensionAPI) {
         }
         const report = formatMemoryDoctorReport({ plan, applyResult, after });
         const reportPath = writeMemoryDoctorReport(ctx.cwd, report, mode);
-        updateProjectState(ctx.cwd, { lastToolDoctorAt: nowIso(), lastToolDoctorPath: reportPath, lastToolDoctorCandidates: plan.candidates.length, lastToolDoctorScopeHints: plan.scopeHints.length });
+        updateProjectState(ctx.cwd, { lastToolDoctorAt: nowIso(), lastToolDoctorPath: reportPath, lastToolDoctorCandidates: plan.candidates.length, lastToolDoctorScopeHints: plan.scopeHints.length, lastToolDoctorReviewHints: plan.reviewHints.length });
         updateMemoryChrome(ctx);
         const applied = applyResult ? ` Applied ${applyResult.applied}.` : "";
-        return { content: [{ type: "text", text: `Memory doctor ${mode}: ${plan.candidates.length} safe cleanup candidates; ${plan.scopeHints.length} scope hints.${applied} Report: ${reportPath}` }], details: { plan, applyResult, after, reportPath, mode } };
+        return { content: [{ type: "text", text: `Memory doctor ${mode}: ${plan.candidates.length} safe cleanup candidates; ${plan.scopeHints.length} scope hints; ${plan.reviewHints.length} preference review hints.${applied} Report: ${reportPath}` }], details: { plan, applyResult, after, reportPath, mode } };
       });
     },
     renderCall(args, theme) {
@@ -4526,11 +4641,13 @@ export default function (pi: ExtensionAPI) {
       if (isPartial) return memoryToolText(memoryTheme(theme, "warning", "🩺 checking memory health…"));
       const details = result.details as { plan?: MemoryDoctorPlan; applyResult?: MemoryDoctorApplyResult; reportPath?: string; mode?: string } | undefined;
       if (!details?.plan) return memoryToolText(memoryTheme(theme, "muted", memoryToolResultText(result)));
-      let text = `${memoryTheme(theme, "success", "🩺 memory doctor")} ${memoryTheme(theme, "accent", `${details.plan.candidates.length} candidate${details.plan.candidates.length === 1 ? "" : "s"}`)} ${memoryTheme(theme, "dim", `• ${details.plan.scopeHints.length} scope hint${details.plan.scopeHints.length === 1 ? "" : "s"}`)}`;
+      let text = `${memoryTheme(theme, "success", "🩺 memory doctor")} ${memoryTheme(theme, "accent", `${details.plan.candidates.length} candidate${details.plan.candidates.length === 1 ? "" : "s"}`)} ${memoryTheme(theme, "dim", `• ${details.plan.scopeHints.length} scope hint${details.plan.scopeHints.length === 1 ? "" : "s"}`)} ${memoryTheme(theme, "dim", `• ${details.plan.reviewHints.length} preference hint${details.plan.reviewHints.length === 1 ? "" : "s"}`)}`;
       if (details.applyResult) text += ` ${memoryTheme(theme, details.applyResult.applied ? "success" : "muted", `• applied ${details.applyResult.applied}`)}`;
       if (expanded) {
         for (const candidate of details.plan.candidates.slice(0, 6)) text += `\n${memoryTheme(theme, "dim", "stale")} ${memoryTheme(theme, "accent", recordKey(candidate.record))} ${memoryTheme(theme, "dim", candidate.reason)}`;
-        if (details.plan.candidates.length > 6) text += `\n${memoryTheme(theme, "dim", `… ${details.plan.candidates.length - 6} more`)}`;
+        for (const hint of details.plan.reviewHints.slice(0, 4)) text += `\n${memoryTheme(theme, "dim", "review")} ${memoryTheme(theme, "accent", recordKey(hint.record))} ${memoryTheme(theme, "dim", hint.reason)}`;
+        if (details.plan.candidates.length > 6) text += `\n${memoryTheme(theme, "dim", `… ${details.plan.candidates.length - 6} more candidates`)}`;
+        if (details.plan.reviewHints.length > 4) text += `\n${memoryTheme(theme, "dim", `… ${details.plan.reviewHints.length - 4} more preference hints`)}`;
         if (details.reportPath) text += `\n${memoryTheme(theme, "dim", "report")} ${details.reportPath}`;
       }
       return memoryToolText(text);

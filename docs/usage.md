@@ -92,6 +92,7 @@ Purge rewrites the relevant `records.jsonl` to remove all versions of that one s
 - noisy imported preference/recipe/session candidates
 - old session recap candidates
 - user/project scope review hints
+- low-context preference review hints (for manual rewrite/pin/stale decisions)
 - before/after counts when applying
 
 Preview mode never changes records. Apply mode only appends `stale` statuses for deterministic hygiene candidates; it does not rewrite, merge, move scopes, or delete anything. Use `/hmemory-audit` when you want the selected Pi model to propose rewrites, merges, new clean records, or pinned changes.
@@ -122,11 +123,11 @@ Keys inside the review overlay:
 /hmemory-audit apply --actions 1,3 session recaps
 ```
 
-The command sends a bounded, redacted packet of active memory records to the currently selected Pi model. The model returns a structured cleanup plan. The extension validates the plan and applies only append-only changes: mark stale/done/superseded, pin/unpin, rewrite a record head, create a clean record, or merge duplicates into a new superseding record.
+The command sends a bounded, redacted packet of active memory records to the currently selected Pi model. The packet includes deterministic local hygiene, duplicate, scope-review, preference-review, and repo-map freshness hints so the model is guided by the same cleanup signals as `/hmemory-doctor`. The model returns a structured cleanup plan. The extension validates the plan and applies only append-only changes: mark stale/done/superseded, pin/unpin, rewrite a record head, create a clean record, or merge duplicates into a new superseding record.
 
 Use `--scope`, `--kind`, `--page`, and `--limit` to audit a smaller batch when the active set is large. Reports distinguish proposed model actions from actual append-only record writes, because one merge action can create one record and update several source records.
 
-In interactive TUI mode, `/hmemory-audit` opens an action review overlay so you can toggle individual proposed actions before applying. Use `preview` for report-only, `apply` to skip confirmation, or `apply --actions 1,3` to apply only specific numbered actions. Reports are saved under:
+In interactive TUI mode, `/hmemory-audit` first shows progress, then opens an action review overlay with model, filter, record-count, and report-path context. You can toggle individual proposed actions before applying. Use `preview` for report-only, `apply` to skip confirmation, or `apply --actions 1,3` to apply only specific numbered actions. Reports are saved under:
 
 ```text
 <project>/.pi/hybrid-memory/audits/
@@ -134,7 +135,7 @@ In interactive TUI mode, `/hmemory-audit` opens an action review overlay so you 
 
 ## Repo-map workflow
 
-The repo map indexes file paths, file kinds, imports, symbols, commands, tools, hooks, and exports for small/medium projects.
+The repo map indexes file paths, file kinds, imports, symbols, commands, tools, hooks, and exports for small/medium projects. If an important source file is above the configured read-size cap, the mapper samples bounded start/middle/end windows instead of indexing it as an empty shell, so imports, mid-file symbols, and late Pi registrations still show up.
 
 ```text
 /hmemory-repomap
@@ -161,6 +162,7 @@ Recommended use:
 
 - Use `/hmemory-refresh` for routine updates.
 - Use `/hmemory-bootstrap` once when opening an older project with useful session history.
+- Let automatic current-session import preserve compact recaps, but use explicit/recent/bootstrap import when you want command recipes from completed sessions. The live current session intentionally skips command-recipe creation so a growing in-progress transcript does not rewrite a recipe every turn.
 - Use `/hmemory-prune` when session recap noise accumulates. It also marks obvious pasted-review preferences, delegated subagent recaps, generic command-only recipes, and command recipes covered by newer/pinned recipes stale.
 - Pruning also marks unpinned `codebase_note` records stale when their referenced source files are changed or removed. Codebase notes created through `hybrid_memory_remember` store lightweight file freshness evidence to make this more reliable.
 

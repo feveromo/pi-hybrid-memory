@@ -98,6 +98,18 @@ function makeProject(name) {
   return cwd;
 }
 
+function userMessage(text) {
+  return { role: 'user', content: [{ type: 'text', text }], timestamp: Date.now() };
+}
+
+async function injectedForPrompt(h, prompt) {
+  await h.emit('before_agent_start', { prompt, systemPrompt: 'base' });
+  const context = await h.emit('context', { messages: [userMessage(prompt)] });
+  const messages = context.find((result) => result?.messages)?.messages ?? [];
+  const memory = messages.find((message) => message.role === 'custom' && message.customType === 'hybrid-memory-context');
+  return String(memory?.content ?? '');
+}
+
 // Pinned status should not override done/stale/superseded suppression.
 {
   const cwd = makeProject('pinned-inactive');
@@ -126,8 +138,7 @@ function makeProject(name) {
     assert.equal(search.details.hits.length, 0, `${item.status} pinned record should not be returned by search`);
   }
 
-  const before = await h.emit('before_agent_start', { prompt: 'obsolete done stale superseded pinned memory', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'obsolete done stale superseded pinned memory');
   for (const item of inactive) assert(!injected.includes(item.content), `${item.status} pinned record should not be injected`);
 }
 
@@ -179,8 +190,17 @@ function makeProject(name) {
     content: 'Duplicate policy memory should be staled by doctor',
     salience: 2,
   });
+  await h.tool('hybrid_memory_remember', {
+    scope: 'user',
+    kind: 'preference',
+    subject: 'commit message should be useful later',
+    content: 'Commit message should be useful later',
+    tags: ['compaction', 'summary-mined'],
+    salience: 2,
+  });
   const preview = await h.tool('hybrid_memory_doctor', { mode: 'preview' });
   assert(preview.details.plan.candidates.some((c) => c.reason === 'duplicate-subject'), 'doctor preview should identify duplicate subject candidates');
+  assert(preview.details.plan.reviewHints.some((h) => h.reason === 'thin-summary-mined-preference'), 'doctor preview should flag low-context summary-mined preferences for manual review');
   assert(existsSync(preview.details.reportPath), 'doctor preview should write a reviewable report');
   assert.equal(readRecords(cwd, 'project').filter((r) => r.id === first.details.id).at(-1).status, 'active', 'doctor preview should not mutate records');
 
@@ -335,8 +355,10 @@ function makeProject(name) {
   assert(!h.activeTools().some((name) => name.startsWith('hybrid_memory_')), 'disabled hybrid memory should remove agent-callable memory tools');
   const before = readRecords(cwd, 'user').length;
   const disabledBefore = await h.emit('before_agent_start', { prompt: 'remember that I prefer disabled memory tests', systemPrompt: 'base' });
+  const disabledContext = await h.emit('context', { messages: [userMessage('remember that I prefer disabled memory tests')] });
   assert.equal(readRecords(cwd, 'user').length, before, 'disabled hybrid memory should not auto-capture prompts');
-  assert.equal(disabledBefore[0], undefined, 'disabled hybrid memory should not inject prompt context');
+  assert.equal(disabledBefore[0], undefined, 'disabled hybrid memory should not modify the pre-agent prompt');
+  assert.equal(disabledContext[0], undefined, 'disabled hybrid memory should not inject prompt context');
   const disabledTool = await h.tool('hybrid_memory_stats');
   assert.equal(disabledTool.details.disabled, true, 'disabled hybrid memory tools should explain that the feature is off if called from stale context');
 
@@ -394,6 +416,28 @@ function makeProject(name) {
   const result = await h.tool('hybrid_memory_import_sessions', { sessionPath: sessionFile });
   assert(result.details.extracted >= 1, 'useful validation command session should create memories');
   assert(readRecords(cwd, 'project').some((r) => r.kind === 'recipe' && /npm test/.test(r.content)), 'npm test command should be remembered as a recipe');
+}
+
+// Current live-session auto-import should avoid command-recipe churn while preserving recaps.
+{
+  const cwd = makeProject('current-session-no-recipe-churn');
+  const sessionFile = join(tempRoot, 'current-session-no-recipe-churn.jsonl');
+  const sessionLines = [
+    { type: 'session', id: 'current-no-recipe-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
+    { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'please validate this extension' }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'bash', arguments: { command: 'npm test && npm run test:fixture' } }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'Done and validated.' }] } },
+  ];
+  writeFileSync(sessionFile, sessionLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf8');
+  const h = makeHarness(cwd, sessionFile);
+  await h.emit('agent_end');
+  const liveRecords = readRecords(cwd, 'project');
+  assert(liveRecords.some((r) => r.kind === 'session_recap'), 'current live-session auto-import should still write a compact recap');
+  assert(!liveRecords.some((r) => r.kind === 'recipe'), 'current live-session auto-import should not create command recipes every turn');
+
+  const explicit = await h.tool('hybrid_memory_import_sessions', { sessionPath: sessionFile });
+  assert(explicit.details.written >= 1, 'explicit session import should still mine useful command recipes');
+  assert(readRecords(cwd, 'project').some((r) => r.kind === 'recipe' && /npm test/.test(r.content)), 'explicit import should preserve command recipe mining');
 }
 
 // Re-importing the same session should not append duplicate records.
@@ -491,10 +535,10 @@ function makeProject(name) {
   execFileSync('git', ['add', 'src/hybrid-memory.ts'], { cwd });
   const h = makeHarness(cwd);
   await h.command('hmemory-repomap');
-  const generic = await h.emit('before_agent_start', { prompt: 'review memory implementation', systemPrompt: 'base' });
-  assert(!String(generic[0]?.systemPrompt ?? '').includes('## Repo Map Matches'), 'generic memory prompts should not auto-inject repo-map matches');
-  const exact = await h.emit('before_agent_start', { prompt: 'inspect src/hybrid-memory.ts hybridFeature', systemPrompt: 'base' });
-  assert(String(exact[0]?.systemPrompt ?? '').includes('src/hybrid-memory.ts'), 'path/symbol prompts should still auto-inject repo-map matches');
+  const generic = await injectedForPrompt(h, 'review memory implementation');
+  assert(!generic.includes('## Repo Map Matches'), 'generic memory prompts should not auto-inject repo-map matches');
+  const exact = await injectedForPrompt(h, 'inspect src/hybrid-memory.ts hybridFeature');
+  assert(exact.includes('src/hybrid-memory.ts'), 'path/symbol prompts should still auto-inject repo-map matches');
 }
 
 // Injection truncation and dense path suffixes should read cleanly.
@@ -512,8 +556,7 @@ function makeProject(name) {
       salience: 5,
     });
   }
-  const before = await h.emit('before_agent_start', { prompt: 'polished preference injection display', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'polished preference injection display');
   assert(injected.includes('…1 additional lower-ranked record omitted'), 'truncation should explain how many lower-ranked records were omitted');
   assert(!injected.includes('…truncated'), 'injection should avoid abrupt raw truncated markers');
   assert(injected.includes('one.ts, two.ts, three.ts, four.ts, five.ts; 1 more path'), 'long file suffixes should cap inline paths and summarize the rest');
@@ -538,8 +581,7 @@ function makeProject(name) {
     }],
   }, null, 2) + '\n', 'utf8');
   const h = makeHarness(cwd);
-  const before = await h.emit('before_agent_start', { prompt: 'inspect src/noisy.ts noisyMagic', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'inspect src/noisy.ts noisyMagic');
   assert(injected.includes('Codebase search hints from the current working tree; may be noisy or stale.'), 'repo-map injection should label matches as search hints');
   assert(injected.includes('symbols: noisyMagic'), 'repo-map injection should keep useful symbols');
   assert(!injected.includes('symbols: in, and, class'), 'repo-map injection should filter junk symbols');
@@ -591,8 +633,7 @@ function makeProject(name) {
     tags: ['commands'],
     salience: 3,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'please run npm test and npm run validate', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'please run npm test and npm run validate');
   assert(!injected.includes('Useful validation/build commands: Useful project validation commands'), 'recipe display should strip stored prose prefixes');
   assert.equal((injected.match(/Useful validation\/build commands:/g) ?? []).length, 1, 'near-identical command recipes should be deduped in injection');
 }
@@ -606,16 +647,15 @@ function makeProject(name) {
     kind: 'session_recap',
     subject: 'messy imported session',
     content: 'Prior session (.): first rough prompt | second useful prompt | +1 more. Outcomes: Done and validated. ## Changed files - `extensions/hybrid-memory.ts`. Tools: bash, read.',
-    filePaths: ['/tmp/pi-subagents-uid-1000/chain-runs/abc/progress.md', '/home/example/Pictures/Screenshots/Screenshot From 2026-05-16.png', '/home/example/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md', 'extensions/hybrid-memory.ts'],
+    filePaths: ['/tmp/pi-subagents-uid-1000/chain-runs/abc/progress.md', '/tmp/example/captures/synthetic.png', '/tmp/example/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/extensions.md', 'extensions/hybrid-memory.ts'],
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'validated rough prompt hybrid memory', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'validated rough prompt hybrid memory');
   assert(injected.includes('outcome: Done and validated'), 'session recap display should lead with a concise outcome');
   assert(injected.includes('topics: first rough prompt / second useful prompt'), 'session recap display should keep compact topics');
   assert(!injected.includes('+1 more'), 'session recap display should remove transcript counters');
   assert(!injected.includes('chain-runs'), 'session recap file suffix should hide temp subagent artifacts');
-  assert(!injected.includes('Pictures/Screenshots'), 'session recap file suffix should hide low-signal screenshot paths');
+  assert(!injected.includes('synthetic.png'), 'session recap file suffix should hide low-signal media paths');
   assert(!injected.includes('.local/lib/node_modules'), 'session recap file suffix should prefer project files over package docs paths');
   assert(injected.includes('extensions/hybrid-memory.ts'), 'session recap file suffix should keep useful project files');
 }
@@ -632,8 +672,7 @@ function makeProject(name) {
     tags: ['session-import', 'recap'],
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'runtime context inspection', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'runtime context inspection');
   assert(!injected.includes('diagnostic context inspection recap'), 'context-inspection recaps should not be injected');
   assert(!injected.includes('[redacted-hybrid-memory-tag]'), 'context-inspection recap content should not leak into injection');
   await h.command('hmemory-prune');
@@ -656,8 +695,7 @@ function makeProject(name) {
       salience: 5,
     });
   }
-  const before = await h.emit('before_agent_start', { prompt: 'settings panel commit abc1234', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'settings panel commit abc1234');
   assert.equal((injected.match(/abc1234/g) ?? []).length, 1, 'session recaps mentioning the same commit should dedupe in injection');
 }
 
@@ -673,8 +711,7 @@ function makeProject(name) {
     pinned: true,
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'unrelated prompt still includes pinned decisions', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'unrelated prompt still includes pinned decisions');
   assert(injected.includes('## Global Decisions/Facts'), 'user decisions should render in a global decision section');
   assert(injected.includes('Global package policy should be visible'), 'pinned user decisions should not disappear after selection');
   await h.command('hmemory-context');
@@ -696,10 +733,10 @@ function makeProject(name) {
     pinned: true,
     salience: 5,
   });
-  const unrelated = await h.emit('before_agent_start', { prompt: 'polish memory extension display', systemPrompt: 'base' });
-  assert(!String(unrelated[0]?.systemPrompt ?? '').includes('Global editor telemetry hook'), 'unrelated pinned user codebase notes should stay out of injection despite generic terms');
-  const related = await h.emit('before_agent_start', { prompt: 'editor telemetry hook details', systemPrompt: 'base' });
-  assert(String(related[0]?.systemPrompt ?? '').includes('Global editor telemetry hook'), 'matching pinned user codebase notes should still be retrievable');
+  const unrelated = await injectedForPrompt(h, 'polish memory extension display');
+  assert(!unrelated.includes('Global editor telemetry hook'), 'unrelated pinned user codebase notes should stay out of injection despite generic terms');
+  const related = await injectedForPrompt(h, 'editor telemetry hook details');
+  assert(related.includes('Global editor telemetry hook'), 'matching pinned user codebase notes should still be retrievable');
 }
 
 // Six concise validation commands should fit without hiding one behind +1 more.
@@ -715,8 +752,7 @@ function makeProject(name) {
     pinned: true,
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'validation commands npm test fixture smoke validate', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'validation commands npm test fixture smoke validate');
   assert(injected.includes('node scripts/test.mjs'), 'the sixth short validation command should be visible');
   assert(!injected.includes('+1 more'), 'exactly six short validation commands should not render as +1 more');
 }
@@ -749,8 +785,7 @@ function makeProject(name) {
     pinned: true,
     salience: 5,
   });
-  const before = await h.emit('before_agent_start', { prompt: 'configured preference lookup', systemPrompt: 'base' });
-  const injected = String(before[0]?.systemPrompt ?? '');
+  const injected = await injectedForPrompt(h, 'configured preference lookup');
   assert(injected.includes('Alpha configured preference'), 'configured section limit should still include the first preference');
   assert(!injected.includes('Beta configured preference'), 'configured section limit should cap user preferences');
   await h.command('hmemory-config');

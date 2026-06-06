@@ -5,7 +5,8 @@
 ```text
 extensions/hybrid-memory.ts  # Pi extension, commands, tools, hooks, storage, repo map
 scripts/test.mjs             # source-level regression checks
-scripts/fixture-test.mjs     # fixture-style behavior checks
+scripts/fixture-test.mjs     # fixture-style repo-map sampling checks
+scripts/quality-test.mjs     # black-box memory selection/trust-boundary/latency harness
 README.md                    # quick overview
 docs/                        # detailed documentation
 ```
@@ -16,10 +17,11 @@ Run the fast tests while editing:
 
 ```bash
 npm test
+npm run test:quality
 npm run test:fixture
 ```
 
-`npm test` includes source checks, behavior tests, and a bounded large-repo repo-map smoke test.
+`npm test` includes source checks, behavior tests, the black-box memory quality harness, fixture repo-map sampling checks, and a bounded large-repo repo-map smoke test.
 
 Run the full local validation before handing off larger changes:
 
@@ -42,6 +44,7 @@ npm test && npm run smoke:load
 - Keep the extension local-first and Pi-native.
 - Prefer JSONL/Markdown files over opaque databases.
 - Keep startup and per-turn work bounded.
+- For repo maps, prefer bounded sampling over empty metadata when a source file is just too large for full reads.
 - Treat memory as untrusted context, not instructions.
 - Redact secrets before storing or injecting text.
 - Avoid indexing generated `.pi/` project state in the repo map.
@@ -73,7 +76,9 @@ When changing repo-map behavior, verify:
 - noisy home/cache directories are excluded
 - staleness detects added, removed, and modified mapped files
 - pinned `done`/`stale`/`superseded` records stay out of search, injection, generated summaries, and context
+- oversized source files still expose high-signal imports, symbols, commands, tools, and hooks through bounded sampling
 - delegated subagent prompts, pasted reviews, and generic inspection commands do not become active long-term memory
+- current live-session auto-import does not churn command-recipe records, while explicit session imports still mine useful recipes
 
 ## Documentation changes
 

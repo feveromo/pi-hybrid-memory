@@ -17,12 +17,42 @@ function run(cmd, args, opts = {}) {
   return result;
 }
 
+function boundarySampleFixture(readMaxBytes) {
+  const size = 50_000;
+  const windowBytes = Math.max(1024, Math.floor(readMaxBytes / 3));
+  const middleStart = Math.floor((size - windowBytes) / 2);
+  const tailStart = size - windowBytes;
+  const chars = Array.from({ length: size }, (_, i) => (i % 97 === 0 ? '\n' : ' '));
+  const put = (offset, text) => {
+    for (let i = 0; i < text.length; i++) chars[offset + i] = text[i];
+  };
+  put(middleStart - 120, 'export function boundaryMiddleSymbol() { return true; }\n');
+  put(tailStart - 120, 'import boundaryThing from "boundary-lib";\nexport function boundaryTailPreludeSymbol() { return boundaryThing; }\n');
+  return chars.join('');
+}
+
 run('git', ['init', '-q']);
 writeFileSync(join(tmp, 'tracked.ts'), 'export const tracked = 1;\n');
 run('git', ['add', 'tracked.ts']);
 writeFileSync(join(tmp, 'untracked.ts'), 'export const untracked = 2;\n');
 mkdirSync(join(tmp, '.pi', 'hybrid-memory'), { recursive: true });
+const repoMapReadMaxBytes = 16000;
+writeFileSync(join(tmp, '.pi', 'settings.json'), JSON.stringify({ hybridMemory: { repoMap: { readMaxBytes: repoMapReadMaxBytes } } }, null, 2) + '\n');
 writeFileSync(join(tmp, '.pi', 'hybrid-memory', 'should-not-map.ts'), 'export const runtimeState = true;\n');
+writeFileSync(join(tmp, 'large-boundary.ts'), boundarySampleFixture(repoMapReadMaxBytes));
+writeFileSync(join(tmp, 'large-extension.ts'), [
+  'import { thing } from "large-lib";\n',
+  'export function largeHeadSymbol() { return thing; }\n',
+  '// filler before middle\n'.repeat(2500),
+  'export function largeMiddleSymbol() { return true; }\n',
+  '// filler after middle\n'.repeat(2500),
+  'export function largeTailSymbol() { return true; }\n',
+  'export default function(pi) {\n',
+  '  pi.registerCommand("large-map", { handler() {} });\n',
+  '  pi.registerTool({ name: "large_memory_tool", parameters: {}, async execute() { return { content: [] }; } });\n',
+  '  pi.on("before_agent_start", () => undefined);\n',
+  '}\n',
+].join(''));
 
 run('pi', ['--no-session', '-e', pkg, '-p', '/hmemory-repomap']);
 
@@ -31,6 +61,20 @@ const paths = map.files.map((f) => f.path).sort();
 if (!paths.includes('tracked.ts')) throw new Error('repo map missed tracked file');
 if (!paths.includes('untracked.ts')) throw new Error('repo map missed untracked non-ignored file');
 if (paths.some((p) => p.startsWith('.pi/'))) throw new Error('repo map included .pi runtime state');
+const large = map.files.find((f) => f.path === 'large-extension.ts');
+if (!large) throw new Error('repo map missed oversized source file');
+if (!large.symbols.includes('largeHeadSymbol')) throw new Error('repo map missed oversized source head symbols');
+if (!large.symbols.includes('largeMiddleSymbol')) throw new Error('repo map missed oversized source middle symbols');
+if (!large.symbols.includes('largeTailSymbol')) throw new Error('repo map missed oversized source tail symbols');
+if (!large.commands.includes('large-map')) throw new Error('repo map missed oversized source commands');
+if (!large.tools.includes('large_memory_tool')) throw new Error('repo map missed oversized source tools');
+if (!large.hooks.includes('before_agent_start')) throw new Error('repo map missed oversized source hooks');
+if (!large.imports.includes('large-lib')) throw new Error('repo map missed oversized source imports');
+const boundary = map.files.find((f) => f.path === 'large-boundary.ts');
+if (!boundary) throw new Error('repo map missed boundary-sampling source file');
+if (!boundary.symbols.includes('boundaryMiddleSymbol')) throw new Error('repo map missed symbol near middle sample boundary');
+if (!boundary.symbols.includes('boundaryTailPreludeSymbol')) throw new Error('repo map missed symbol near tail sample boundary');
+if (!boundary.imports.includes('boundary-lib')) throw new Error('repo map missed import near tail sample boundary');
 
 run('pi', ['--no-session', '-e', pkg, '-p', '/hmemory-prune foo']);
 

@@ -68,6 +68,7 @@ Project memory is written under `<project>/.pi/hybrid-memory/`. Add `.pi/` to th
 
 ```bash
 npm test
+npm run test:quality
 npm run test:fixture
 npm run smoke:load
 npm run validate
@@ -79,12 +80,12 @@ npm run validate
 - User scope: `~/.pi/agent/memory/`.
 - Project scope: nearest project root `.pi/hybrid-memory/`.
 - Lexical/path/symbol retrieval first; no vector DB or external service.
-- Transient per-turn injection via `before_agent_start`, capped by lean, Pi-settings-tunable section-aware budgets with global decisions/facts, stricter per-section limits, and light display polish/dedupe.
+- Transient per-turn injection via Pi's `context` hook as a hidden custom message, capped by lean, Pi-settings-tunable section-aware budgets with global decisions/facts, stricter per-section limits, and light display polish/dedupe.
 - Cheap session-start refresh: initialize memory, auto-build missing/stale repo maps for small projects, and ingest only the current/recent local sessions.
-- Lightweight repo map cache in `<project>/.pi/hybrid-memory/repomap.json`, including tracked and untracked non-ignored files, symbols, imports, commands, tools, hooks, and exports.
+- Lightweight repo map cache in `<project>/.pi/hybrid-memory/repomap.json`, including tracked and untracked non-ignored files, symbols, imports, commands, tools, hooks, and exports, with bounded start/middle/end sampling for oversized source files.
 - Compact working context in `<project>/.pi/hybrid-memory/context.md` for fast agent orientation.
 - Conservative session import that stores compact session recaps, trimmed validation/build command recipes, and explicit user-stated preferences while skipping delegated-agent noise and temp artifacts.
-- Configurable lightweight auto-capture for durable preference prompts as they are submitted, plus compact current-session import/pruning after each agent turn.
+- Configurable lightweight auto-capture for durable preference prompts as they are submitted, plus compact current-session import/pruning after each agent turn without live command-recipe churn.
 - Secret/path redaction before records are stored or injected, including plain `sk-...`, `sk-ant-...`, and `sk-proj-...` style keys.
 - Parallel-safe mutating hooks, commands, and tools via Pi's file mutation queue, batched JSONL appends, and cached latest-head reads.
 - Codebase notes store lightweight file freshness evidence and are marked stale during pruning when referenced files are changed or removed.
@@ -105,7 +106,7 @@ npm run validate
 - `hybrid_memory_remember` — add a typed user/project memory record.
 - `hybrid_memory_search` — search memory records, with optional scope/kind/status filters.
 - `hybrid_memory_forget` — mark records `done`, `stale`, or `superseded`; optionally keep a tiny active `tombstone`/`tombstoneNote` preference for “do not suggest this again” cases.
-- `hybrid_memory_doctor` — preview/apply deterministic cleanup candidates and write a curation report.
+- `hybrid_memory_doctor` — preview/apply deterministic cleanup candidates, scope hints, and low-context preference review hints, then write a curation report.
 - `hybrid_memory_stats` — show memory counts and paths.
 - `hybrid_memory_import_sessions` — import concise recaps/preferences from Pi session JSONL files.
 - `hybrid_memory_refresh_context` — rebuild repo map and optionally import recent session recaps.
@@ -122,11 +123,11 @@ npm run validate
 - `/hmemory-purge <scoped-id> --force` — hard-delete all JSONL versions of one memory and write a content-free audit marker.
 - `/hmemory-repomap` — rebuild repo map for the current project.
 - `/hmemory-repo <query>` — search repo map files/symbols/imports/commands/tools/hooks.
-- `/hmemory-health` — show memory health, active/inactive counts, duplicate hints, and repo-map staleness.
+- `/hmemory-health` — show memory health, active/inactive counts, cleanup/review hints, and repo-map staleness.
 - `/hmemory-doctor [preview|apply] [maxRecaps]` — write a curation report with safe cleanup candidates, scope hints, and optional append-only stale-status application.
 - `/hmemory-show <id>` — show one memory record.
 - `/hmemory-review` — review/pin/stale/done active memories in a TUI overlay.
-- `/hmemory-audit [preview|apply] [--scope user|project] [--kind recipe] [--page N] [--limit N] [--actions 1,3] [focus]` — use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes.
+- `/hmemory-audit [preview|apply] [--scope user|project] [--kind recipe] [--page N] [--limit N] [--actions 1,3] [focus]` — use the selected Pi model plus local doctor-style hints to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes.
 - `/hmemory-prune [maxActiveRecaps]` — mark duplicate/old session recaps stale and optionally create a rollup.
 - `/hmemory-dashboard [full]` — open a styled TUI overlay with memory/repo health; `full` shows command/tool details.
 - `/hmemory-context` — regenerate/show the compact working context file.
