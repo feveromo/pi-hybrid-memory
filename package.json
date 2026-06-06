@@ -36,8 +36,9 @@
     "typebox": "*"
   },
   "scripts": {
-    "test": "node scripts/test.mjs && node scripts/behavior-test.mjs && npm run test:fixture",
+    "test": "node scripts/test.mjs && node scripts/behavior-test.mjs && node scripts/quality-test.mjs && npm run test:fixture",
     "test:source": "node scripts/test.mjs",
+    "test:quality": "node scripts/quality-test.mjs",
     "test:fixture": "node scripts/fixture-test.mjs",
     "validate": "npm test && npm run smoke:load",
     "smoke:load": "pi --no-session --no-extensions -e . -p '/hmemory-health'",

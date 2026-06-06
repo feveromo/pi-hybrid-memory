@@ -18,12 +18,12 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `/hmemory-unpin <id>` | Unpin a memory record. |
 | `/hmemory-work <description>` | Create an active project work item. |
 | `/hmemory-review` | Review/pin/stale/done records in a TUI overlay. |
-| `/hmemory-audit [preview|apply] [--scope user\|project] [--kind recipe] [--page N] [--limit N] [--actions 1,3] [focus]` | Use the selected Pi model to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes. |
+| `/hmemory-audit [preview|apply] [--scope user\|project] [--kind recipe] [--page N] [--limit N] [--actions 1,3] [focus]` | Use the selected Pi model plus local doctor-style hints to audit, clean, dedupe, merge, pin/unpin, and rewrite memory through validated append-only changes. |
 | `/hmemory-prune [maxActiveRecaps]` | Prune duplicate/old session-recapped memories and maybe create a rollup. |
 | `/hmemory-repomap` | Rebuild the repo map for the current project. |
 | `/hmemory-repo <query>` | Search repo-map files, symbols, imports, commands, tools, and hooks. |
-| `/hmemory-health` | Show memory health, active/inactive counts, duplicate hints, cleanup candidate counts, scope hints, and repo-map staleness. |
-| `/hmemory-doctor [preview\|apply] [maxRecaps]` | Write a deterministic curation report and optionally append stale statuses for safe cleanup candidates. |
+| `/hmemory-health` | Show memory health, active/inactive counts, duplicate hints, cleanup candidate counts, scope/preference review hints, and repo-map staleness. |
+| `/hmemory-doctor [preview\|apply] [maxRecaps]` | Write a deterministic curation report with safe cleanup candidates plus scope/preference review hints; optionally append stale statuses for safe cleanup candidates. |
 | `/hmemory-dashboard [full]` | Open a styled memory/repo dashboard overlay. |
 | `/hmemory-context` | Regenerate/show the compact working context file. |
 | `/hmemory-ingest-session [current\|recent N\|path]` | Import memory from Pi session JSONL files. |
@@ -42,7 +42,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `hybrid_memory_refresh_context` | Rebuild repo map and optionally import recent session recaps. |
 | `hybrid_memory_bootstrap_project` | Rebuild repo map, import prior project sessions, prune, and roll up. |
 | `hybrid_memory_stats` | Show active/inactive counts by scope/status/kind, hygiene hints, and paths. |
-| `hybrid_memory_doctor` | Preview/apply deterministic cleanup candidates and write a curation report. |
+| `hybrid_memory_doctor` | Preview/apply deterministic cleanup candidates and write a curation report with scope/preference review hints. |
 | `hybrid_memory_build_repomap` | Build or refresh the repo map. |
 
 ## Record kinds

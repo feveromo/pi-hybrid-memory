@@ -43,15 +43,16 @@ The project root is found by walking upward from the current working directory a
 
 ## Retrieval and injection
 
-Before an agent starts, the extension:
+Before an agent starts, the extension auto-captures durable preference prompts. At LLM context-build time, the extension:
 
-1. Redacts secrets from the prompt used for matching.
-2. Scores active records by lexical/path/symbol relevance.
-3. Considers pinned active records and active work items, while keeping global pinned codebase notes scoped to matching prompts or project paths. Inactive records (`done`, `stale`, or `superseded`) are not injected even if still pinned.
-4. Groups results into sections such as user preferences, project decisions, recipes, session recaps, and codebase notes.
-5. Lightly polishes the display: command recipes are normalized/deduped, session recaps render as concise outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, file suffixes are capped with explicit “N more paths” wording, session recap file suffixes prefer project-local paths over package/docs paths, global technical notes need distinctive prompt/path matches, and user-scoped decisions/facts render in a separate global section.
-6. Adds relevant repo-map matches when available. Automatic repo-map injection is stricter than `/hmemory-repo`: it requires a path-like match, an exact symbol/command/tool/hook match, or a configurable minimum number of distinctive non-generic query terms. Injected repo-map matches are labeled as potentially noisy/stale codebase search hints and filter low-value parser symbols.
-7. Injects a capped `<hybrid_memory>` block into the system prompt. Budgeting is section-aware so high-value sections are not cut mid-record by lower-priority content; omitted tails are summarized with explicit lower-ranked record/match counts. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
+1. Removes any older `hybrid-memory-context` custom message so repeated context rebuilds do not accumulate duplicate memory blocks.
+2. Redacts secrets from the latest user prompt used for matching.
+3. Scores active records by lexical/path/symbol relevance.
+4. Considers pinned active records and active work items, while keeping global pinned codebase notes scoped to matching prompts or project paths. Inactive records (`done`, `stale`, or `superseded`) are not injected even if still pinned.
+5. Groups results into sections such as user preferences, project decisions, recipes, session recaps, and codebase notes.
+6. Lightly polishes the display: command recipes are normalized/deduped, session recaps render as concise outcomes/topics, diagnostic recaps about inspecting injected context are suppressed/prunable, temp agent artifact and screenshot/media paths are hidden, file suffixes are capped with explicit “N more paths” wording, session recap file suffixes prefer project-local paths over package/docs paths, global technical notes need distinctive prompt/path matches, and user-scoped decisions/facts render in a separate global section.
+7. Adds relevant repo-map matches when available. Automatic repo-map injection is stricter than `/hmemory-repo`: it requires a path-like match, an exact symbol/command/tool/hook match, or a configurable minimum number of distinctive non-generic query terms. Injected repo-map matches are labeled as potentially noisy/stale codebase search hints and filter low-value parser symbols.
+8. Prepends a hidden custom message containing a capped `<hybrid_memory>` block through Pi's `context` hook instead of appending retrieved records to the system prompt. Budgeting is section-aware so high-value sections are not cut mid-record by lower-priority content; omitted tails are summarized with explicit lower-ranked record/match counts. The cap and per-section limits can be tuned with the local Pi `hybridMemory` settings object.
 
 Mutating hybrid-memory hooks, commands, and tools use Pi's file mutation queue so parallel/local writes serialize JSONL appends and regenerated summaries/context. Session import, compaction mining, doctor cleanup, and prune operations batch record appends so summaries/context are regenerated once per batch rather than once per record.
 
@@ -77,13 +78,13 @@ For each mappable file it records:
 - exports
 - size
 
-The map is used for `/hmemory-repo`, `context.md`, dashboard summaries, and prompt-time repo matches. Repo-map file and read-size caps are configurable through Pi settings while remaining bounded by safe min/max ranges.
+The map is used for `/hmemory-repo`, `context.md`, dashboard summaries, and prompt-time repo matches. Repo-map file and read-size caps are configurable through Pi settings while remaining bounded by safe min/max ranges. Oversized source files are still sampled with bounded start/middle/end reads so important imports, mid-file symbols, and late command/tool/hook registrations are not silently lost when one file is over the read cap.
 
 When created through the remember tool, `codebase_note` records store lightweight file freshness evidence (`path`, `size`, `mtimeMs`) for referenced files. During pruning, active unpinned codebase notes are marked stale if a referenced file is missing or has changed relative to that evidence, falling back to record update time for older records. This keeps source files ahead of old memory claims.
 
 ## Model audit and cleanup
 
-`/hmemory-audit` builds a bounded audit packet from active records, local hygiene flags, duplicate-subject hints, and repo-map freshness. The packet can be narrowed by scope, kind, focus query, and page/limit so large active sets can be reviewed in batches. The packet is redacted with the same best-effort secret redaction used for storage and injection.
+`/hmemory-audit` builds a bounded audit packet from active records, local hygiene flags, duplicate-subject hints, scope-review hints, preference-review hints, and repo-map freshness. The packet can be narrowed by scope, kind, focus query, and page/limit so large active sets can be reviewed in batches. The packet is redacted with the same best-effort secret redaction used for storage and injection.
 
 The selected Pi model returns strict JSON with a short report plus structured actions. Supported actions are:
 
@@ -100,8 +101,9 @@ The extension validates ids, scopes, kinds, statuses, and field sizes before app
 The extension uses Pi hooks to keep context fresh. Mutating hooks run inside the same memory mutation queue as commands/tools:
 
 - `session_start` — initialize files, run a cheap startup refresh, maybe build a small repo map, import current/recent project sessions, and update the status chrome.
-- `before_agent_start` — auto-capture durable preference prompts and inject relevant memory.
-- `agent_end` — import the current session compactly and prune old session recap noise, delegated-session artifacts, generic command recipes, and obvious pasted-review preference captures.
+- `before_agent_start` — auto-capture durable preference prompts and keep tool state/chrome current.
+- `context` — inject relevant memory as one hidden, labeled custom context message without permanently modifying the system prompt.
+- `agent_end` — import the current session compactly and prune old session recap noise, delegated-session artifacts, generic command recipes, and obvious pasted-review preference captures. Current live-session import skips command-recipe creation to avoid rewriting a growing recipe every turn; explicit/recent/bootstrap imports still mine useful command recipes.
 - `session_compact` — mine compaction summaries for decisions, preferences, and work items.
 - `session_tree` — mine branch summaries similarly.
 
