@@ -68,11 +68,11 @@ Project memory is written under `<project>/.pi/hybrid-memory/`. Add `.pi/` to th
 
 ```bash
 npm test
-npm run test:quality
-npm run test:fixture
-npm run smoke:load
 npm run validate
+npm run release:check
 ```
+
+`npm test` covers types, architecture, docs, security, behavior, retrieval quality, repo-map fixtures, and the 15k-record latency budget. `npm run validate` adds an isolated Pi package smoke-load. `npm run release:check` also audits dependencies and verifies the packed file inventory.
 
 ## Features
 
@@ -87,7 +87,9 @@ npm run validate
 - Conservative session import that stores compact session recaps, trimmed validation/build command recipes, and explicit user-stated preferences while skipping delegated-agent noise and temp artifacts.
 - Configurable lightweight auto-capture for durable preference prompts as they are submitted, plus compact current-session import/pruning after each agent turn without live command-recipe churn.
 - Secret/path redaction before records are stored or injected, including plain `sk-...`, `sk-ant-...`, and `sk-proj-...` style keys.
-- Parallel-safe mutating hooks, commands, and tools via Pi's file mutation queue, batched JSONL appends, and cached latest-head reads.
+- Process-safe mutating hooks, commands, and tools via Pi's in-process queue plus ordered filesystem locks; batched JSONL appends regenerate summaries/context once per mutation batch.
+- Cached latest-head reads and a single-pass prepared-query scorer keep prompt-time retrieval fast without a vector database; the checked-in 15k-record benchmark enforces relevance, context size, and warm p95 latency.
+- Private `0700` memory directories and `0600` files, atomic derived-file/report replacement, symlink-resistant session/repo traversal, and schema-validated persisted repo maps.
 - Codebase notes store lightweight file freshness evidence and are marked stale during pruning when referenced files are changed or removed.
 - Opt-in model audit/cleanup through `/hmemory-audit`, using the selected Pi model to propose validated append-only memory changes like dedupe, merge, stale, pin, and rewrite.
 - Pi compaction/branch summaries can be mined into durable memories through Pi session hooks.
@@ -107,6 +109,7 @@ npm run validate
 - `hybrid_memory_search` — search memory records, with optional scope/kind/status filters.
 - `hybrid_memory_forget` — mark records `done`, `stale`, or `superseded`; optionally keep a tiny active `tombstone`/`tombstoneNote` preference for “do not suggest this again” cases.
 - `hybrid_memory_doctor` — preview/apply deterministic cleanup candidates, scope hints, and low-context preference review hints, then write a curation report.
+- `hybrid_memory_explain` — read-only preview of the exact bounded memory block plus ranked candidate ids/scores for a proposed prompt.
 - `hybrid_memory_stats` — show memory counts and paths.
 - `hybrid_memory_import_sessions` — import concise recaps/preferences from Pi session JSONL files.
 - `hybrid_memory_refresh_context` — rebuild repo map and optionally import recent session recaps.
@@ -119,6 +122,7 @@ npm run validate
 - `/hmemory-config` — show active hybrid-memory tuning from Pi settings.
 - `/hmemory-toggle on|off [--global|--project]` — enable/disable automatic injection, auto-capture, auto-import, and agent-callable memory tools without deleting stored JSONL data.
 - `/hmemory-search [--all] [--scope user|project] [--kind recipe] [--status stale] <query>` — search memory.
+- `/hmemory-explain <prompt>` — preview and explain which memories would be candidates for that prompt without changing storage.
 - `/hmemory-forget <id|query> [status]` — mark a memory stale/done/superseded; use `user:<id>` or `project:<id>` if ambiguous. If no id matches, it previews matching active records.
 - `/hmemory-purge <scoped-id> --force` — hard-delete all JSONL versions of one memory and write a content-free audit marker.
 - `/hmemory-repomap` — rebuild repo map for the current project.
@@ -159,13 +163,6 @@ npm run validate
 
 ## Project status
 
-`pi-hybrid-memory` is early, active, and intentionally small. It is built from day-to-day maintainer workflows: reopening old projects, carrying decisions across sessions, preserving validation commands, auditing stale context, and keeping private agent memory inspectable.
+`pi-hybrid-memory` is pre-1.0 but has strict type checking, architecture/docs/security/behavior/privacy contracts, a black-box injection-quality harness, a 15k-record latency benchmark, isolated package smoke loading, and Node 22/24 CI. The stable Pi entrypoint is intentionally tiny; storage, repo context, sessions, curation, retrieval/presentation, audit, lifecycle, commands, and tools live in focused modules.
 
-Current priorities:
-
-- expand prompt-injection and redaction regression fixtures
-- add more example workflows for issue triage, release notes, and security review
-- improve retrieval-quality checks for long-running projects
-- keep startup, session import, and prompt injection bounded enough for daily use
-
-Still intentionally simple: no vector DB, no daemon, and no external service by default. `/hmemory-audit` is explicit and uses whatever Pi model/provider you selected, with a redacted bounded packet, targeted filters/paging, optional per-action selection, and append-only validated changes. Normal curation remains append-only; `/hmemory-purge <scoped-id> --force` is the explicit hard-delete escape hatch. Startup/turn auto-refresh is deliberately bounded, compact, local, and lightly configurable through Pi settings; use `/hmemory-bootstrap` for deeper historical backfills.
+It remains intentionally simple at runtime: no vector DB, daemon, or external service by default. `/hmemory-audit` is explicit and uses the selected Pi model/provider with an immutable, redacted, bounded packet and validated batched actions. Normal curation remains append-only; `/hmemory-purge <scoped-id> --force` is the explicit atomic hard-delete escape hatch. Startup and turn refreshes stay bounded; use `/hmemory-bootstrap` for deeper historical backfills.

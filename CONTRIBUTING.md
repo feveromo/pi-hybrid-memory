@@ -12,7 +12,11 @@ Thanks for taking a look at `pi-hybrid-memory`. The project is intentionally sma
 
 ## Development setup
 
-Install dependencies used by Pi in your normal Pi environment, then load this checkout as a local Pi package:
+Use Node.js 22.19 or newer, install the pinned development dependencies, then load this checkout as a local Pi package:
+
+```bash
+npm ci
+```
 
 ```json
 {
@@ -38,7 +42,16 @@ Run the full local validation for larger changes:
 npm run validate
 ```
 
-`npm run validate` runs the source/behavior/fixture tests and a Pi smoke-load check for `/hmemory-health`.
+Before publishing a release candidate, run:
+
+```bash
+npm run release:check
+```
+
+`npm test` runs strict typechecking plus architecture, documentation, security, behavior, retrieval-quality, fixture, and 15k-record latency tests. `npm run validate` adds an isolated Pi smoke-load check for `/hmemory-health`; `release:check` also runs the dependency audit and package dry-run.
+
+Runtime changes belong in the focused modules under `extensions/runtime/` and reusable hardening primitives under `extensions/core/`. Keep `extensions/hybrid-memory.ts` as the stable thin package entrypoint.
+The source contract caps runtime modules at 650 lines; split by responsibility instead of growing a catchall.
 
 ## Security and privacy checklist
 
@@ -48,6 +61,7 @@ For changes that touch memory storage, retrieval, session import, repo maps, red
 - retrieved memory remains labeled as untrusted context
 - inactive records stay out of default search, injection, summaries, and generated context
 - sensitive paths and `.pi/` runtime state are excluded from repo maps
+- memory mutations remain atomic and serialized across both tools and Pi processes
 - model-assisted cleanup validates structured actions before applying append-only changes
 - `/hmemory-purge` does not copy purged content into audit markers
 

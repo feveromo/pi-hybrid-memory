@@ -10,6 +10,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `/hmemory-config` | Show active hybrid-memory tuning from Pi settings. |
 | `/hmemory-toggle on\|off [--global\|--project]` | Enable/disable automatic injection/capture/import and agent-callable memory tools without deleting JSONL data. |
 | `/hmemory-search [--all] [--scope user\|project] [--kind recipe] [--status stale] <query>` | Search memory records, defaulting to active records unless a status/all flag is provided. |
+| `/hmemory-explain <prompt>` | Read-only preview of the bounded injected block plus ranked candidate ids/scores for a prompt. |
 | `/hmemory-show <id>` | Show one memory record. |
 | `/hmemory-forget <id\|query> [status]` | Mark a memory `stale`, `done`, or `superseded`; non-id text previews matching active records. |
 | `/hmemory-purge <scoped-id> --force` | Hard-delete all JSONL versions of one scoped memory and write a content-free audit marker. |
@@ -43,6 +44,7 @@ This page is a compact inventory. See [Usage](usage.md) for workflows.
 | `hybrid_memory_bootstrap_project` | Rebuild repo map, import prior project sessions, prune, and roll up. |
 | `hybrid_memory_stats` | Show active/inactive counts by scope/status/kind, hygiene hints, and paths. |
 | `hybrid_memory_doctor` | Preview/apply deterministic cleanup candidates and write a curation report with scope/preference review hints. |
+| `hybrid_memory_explain` | Read-only retrieval diagnostic showing the bounded block and ranked candidate metadata for a prompt. |
 | `hybrid_memory_build_repomap` | Build or refresh the repo map. |
 
 ## Record kinds

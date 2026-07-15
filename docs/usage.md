@@ -38,6 +38,14 @@ Turning memory off disables automatic injection, auto-capture, current-session a
 
 If an id exists in both user and project scope, use a scoped id such as `user:<id>` or `project:<id>`. Search defaults to active memories; add `--all` or `--status stale|done|superseded` when auditing old append-only history.
 
+### Explain prompt-time selection
+
+```text
+/hmemory-explain validate the repo-map symlink handling
+```
+
+This is read-only. It runs the same selector used by the `context` hook and shows the bounded `<hybrid_memory>` block plus candidate scoped ids, kinds, scores, and pinned status. Use it when a useful record is missing, an unrelated record appears, or you want to inspect the exact context cost before an agent turn. Agents can call the equivalent `hybrid_memory_explain` tool.
+
 ### Add active work
 
 ```text
@@ -194,6 +202,7 @@ Useful tools:
 - `hybrid_memory_refresh_context`
 - `hybrid_memory_bootstrap_project`
 - `hybrid_memory_stats`
+- `hybrid_memory_explain` — inspect retrieval candidates and the exact bounded block without mutating memory
 - `hybrid_memory_build_repomap`
 
 ## Generated files to inspect

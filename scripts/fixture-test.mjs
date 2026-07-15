@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -6,6 +6,10 @@ import { spawnSync } from 'node:child_process';
 const pkg = resolve(new URL('..', import.meta.url).pathname);
 const tmp = mkdtempSync(join(tmpdir(), 'pi-hybrid-memory-fixture-'));
 const home = mkdtempSync(join(tmpdir(), 'pi-hybrid-memory-home-'));
+process.once('exit', () => {
+  rmSync(tmp, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
+});
 
 function run(cmd, args, opts = {}) {
   const result = spawnSync(cmd, args, { cwd: tmp, encoding: 'utf8', ...opts, env: { ...process.env, HOME: home, ...(opts.env ?? {}) } });
@@ -35,6 +39,11 @@ run('git', ['init', '-q']);
 writeFileSync(join(tmp, 'tracked.ts'), 'export const tracked = 1;\n');
 run('git', ['add', 'tracked.ts']);
 writeFileSync(join(tmp, 'untracked.ts'), 'export const untracked = 2;\n');
+const outsideFile = join(home, 'outside.ts');
+writeFileSync(outsideFile, 'import "outside-private-module";\nexport const outsidePrivateSymbol = true;\n');
+symlinkSync(outsideFile, join(tmp, 'tracked-symlink.ts'));
+run('git', ['add', 'tracked-symlink.ts']);
+writeFileSync(join(tmp, 'sensitive-metadata.ts'), 'export default function(pi) { pi.registerCommand("token=synthetic_secret_value_123456", { handler() {} }); }\n');
 mkdirSync(join(tmp, '.pi', 'hybrid-memory'), { recursive: true });
 const repoMapReadMaxBytes = 16000;
 writeFileSync(join(tmp, '.pi', 'settings.json'), JSON.stringify({ hybridMemory: { repoMap: { readMaxBytes: repoMapReadMaxBytes } } }, null, 2) + '\n');
@@ -61,6 +70,10 @@ const paths = map.files.map((f) => f.path).sort();
 if (!paths.includes('tracked.ts')) throw new Error('repo map missed tracked file');
 if (!paths.includes('untracked.ts')) throw new Error('repo map missed untracked non-ignored file');
 if (paths.some((p) => p.startsWith('.pi/'))) throw new Error('repo map included .pi runtime state');
+if (paths.includes('tracked-symlink.ts')) throw new Error('repo map followed a tracked symlink outside the repository');
+const serializedMap = JSON.stringify(map);
+if (serializedMap.includes('outside-private-module') || serializedMap.includes('outsidePrivateSymbol')) throw new Error('repo map persisted metadata read through an outside-root symlink');
+if (serializedMap.includes('synthetic_secret_value_123456')) throw new Error('repo map persisted unredacted secret-like metadata');
 const large = map.files.find((f) => f.path === 'large-extension.ts');
 if (!large) throw new Error('repo map missed oversized source file');
 if (!large.symbols.includes('largeHeadSymbol')) throw new Error('repo map missed oversized source head symbols');
@@ -78,4 +91,4 @@ if (!boundary.imports.includes('boundary-lib')) throw new Error('repo map missed
 
 run('pi', ['--no-session', '-e', pkg, '-p', '/hmemory-prune foo']);
 
-console.log(`pi-hybrid-memory fixture ok: ${tmp}`);
+console.log('pi-hybrid-memory fixture ok (temporary workspace cleaned)');

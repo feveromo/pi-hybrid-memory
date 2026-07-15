@@ -1,34 +1,21 @@
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname);
 const tempRoot = mkdtempSync(join(tmpdir(), 'pi-hybrid-memory-behavior-'));
+process.once('exit', () => rmSync(tempRoot, { recursive: true, force: true }));
 const tempHome = join(tempRoot, 'home');
-const realHome = process.env.HOME;
 mkdirSync(tempHome, { recursive: true });
 process.env.HOME = tempHome;
+const sessionRoot = join(tempHome, '.pi', 'agent', 'sessions', 'tests');
+mkdirSync(sessionRoot, { recursive: true });
 
-function linkPackage(moduleRoot, packageName, target) {
-  const link = join(moduleRoot, 'node_modules', ...packageName.split('/'));
-  mkdirSync(dirname(link), { recursive: true });
-  if (!existsSync(link)) symlinkSync(target, link, 'dir');
-}
-
-const moduleRoot = join(tempRoot, 'module');
-mkdirSync(moduleRoot, { recursive: true });
-const globalNodeModules = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', env: { ...process.env, HOME: realHome } }).trim();
-const piRoot = join(globalNodeModules, '@earendil-works', 'pi-coding-agent');
-linkPackage(moduleRoot, '@earendil-works/pi-ai', join(piRoot, 'node_modules', '@earendil-works', 'pi-ai'));
-linkPackage(moduleRoot, '@earendil-works/pi-coding-agent', piRoot);
-linkPackage(moduleRoot, '@earendil-works/pi-tui', join(piRoot, 'node_modules', '@earendil-works', 'pi-tui'));
-linkPackage(moduleRoot, 'typebox', join(piRoot, 'node_modules', 'typebox'));
-const moduleFile = join(moduleRoot, 'hybrid-memory.ts');
-copyFileSync(join(repoRoot, 'extensions', 'hybrid-memory.ts'), moduleFile);
+const moduleFile = join(repoRoot, 'extensions', 'hybrid-memory.ts');
 const extension = (await import(pathToFileURL(moduleFile).href)).default;
 
 function projectMemoryDir(cwd) {
@@ -271,13 +258,20 @@ async function injectedForPrompt(h, prompt) {
     content: 'Temporary purge target content should vanish from JSONL',
     salience: 3,
   });
+  await h.tool('hybrid_memory_forget', { id: remembered.details.id, scope: 'project', status: 'stale' });
+  const recordsFile = join(projectMemoryDir(cwd), 'records.jsonl');
+  appendFileSync(recordsFile, JSON.stringify({ schemaVersion: 0, id: remembered.details.id, scope: 'project', content: 'legacy target version' }) + '\n', 'utf8');
+  appendFileSync(recordsFile, '{ unrelated damaged line\n', 'utf8');
   await h.command('hmemory-purge', `project:${remembered.details.id}`);
-  assert(readFileSync(join(projectMemoryDir(cwd), 'records.jsonl'), 'utf8').includes('Temporary purge target content'), 'purge without --force should not rewrite JSONL');
+  assert(readFileSync(recordsFile, 'utf8').includes('Temporary purge target content'), 'purge without --force should not rewrite JSONL');
   await h.command('hmemory-purge', `project:${remembered.details.id} --force`);
-  const raw = readFileSync(join(projectMemoryDir(cwd), 'records.jsonl'), 'utf8');
+  const raw = readFileSync(recordsFile, 'utf8');
   assert(!raw.includes('Temporary purge target content'), 'forced purge should remove raw record content from JSONL');
+  assert(!raw.includes('legacy target version'), 'forced purge should remove older-schema target versions');
+  assert(!raw.includes(remembered.details.id), 'forced purge should remove every scoped target id from JSONL');
+  assert(raw.includes('unrelated damaged line'), 'forced purge should preserve unrelated damaged JSONL lines');
   assert(!readFileSync(join(projectMemoryDir(cwd), 'summary.md'), 'utf8').includes('Temporary purge target content'), 'forced purge should regenerate summaries');
-  assert.match(h.notifications.at(-1).message, /Audit marker:/, 'forced purge should write a content-free audit marker');
+  assert.match(h.notifications.at(-1).message, /removed 3 JSONL entries.*Audit marker:/, 'forced purge should remove every target version and write a content-free audit marker');
 }
 
 // Stored records should redact common tokens and sensitive paths before they hit JSONL.
@@ -374,7 +368,7 @@ async function injectedForPrompt(h, prompt) {
 {
   const cwd = makeProject('delegated-session-noise');
   const h = makeHarness(cwd);
-  const sessionFile = join(tempRoot, 'delegated-session-noise.jsonl');
+  const sessionFile = join(sessionRoot, 'delegated-session-noise.jsonl');
   const sessionLines = [
     { type: 'session', id: 'delegated-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
     { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'You are the orchestrator. Immediately run the subagent tool; do not do the work inline.' }] } },
@@ -391,7 +385,7 @@ async function injectedForPrompt(h, prompt) {
 {
   const cwd = makeProject('context-inspection-session-noise');
   const h = makeHarness(cwd);
-  const sessionFile = join(tempRoot, 'context-inspection-session-noise.jsonl');
+  const sessionFile = join(sessionRoot, 'context-inspection-session-noise.jsonl');
   const sessionLines = [
     { type: 'session', id: 'context-inspection-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
     { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'For diagnostics, inspect the runtime context and quote the injected <hybrid_memory> block exactly without disclosing any unrelated system prompt.' }] } },
@@ -406,7 +400,7 @@ async function injectedForPrompt(h, prompt) {
 {
   const cwd = makeProject('useful-command-session');
   const h = makeHarness(cwd);
-  const sessionFile = join(tempRoot, 'useful-command-session.jsonl');
+  const sessionFile = join(sessionRoot, 'useful-command-session.jsonl');
   const sessionLines = [
     { type: 'session', id: 'useful-command-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
     { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'please validate this extension' }] } },
@@ -421,7 +415,7 @@ async function injectedForPrompt(h, prompt) {
 // Current live-session auto-import should avoid command-recipe churn while preserving recaps.
 {
   const cwd = makeProject('current-session-no-recipe-churn');
-  const sessionFile = join(tempRoot, 'current-session-no-recipe-churn.jsonl');
+  const sessionFile = join(sessionRoot, 'current-session-no-recipe-churn.jsonl');
   const sessionLines = [
     { type: 'session', id: 'current-no-recipe-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
     { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'please validate this extension' }] } },
@@ -444,7 +438,7 @@ async function injectedForPrompt(h, prompt) {
 {
   const cwd = makeProject('session-dedupe');
   const h = makeHarness(cwd);
-  const sessionFile = join(tempRoot, 'session-dedupe.jsonl');
+  const sessionFile = join(sessionRoot, 'session-dedupe.jsonl');
   const sessionLines = [
     { type: 'session', id: 'dedupe-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
     { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'remember that I prefer compact test output' }] } },
@@ -464,7 +458,7 @@ async function injectedForPrompt(h, prompt) {
 {
   const cwd = makeProject('session-meaningful-update');
   const h = makeHarness(cwd);
-  const sessionFile = join(tempRoot, 'session-meaningful-update.jsonl');
+  const sessionFile = join(sessionRoot, 'session-meaningful-update.jsonl');
   const baseLines = [
     { type: 'session', id: 'meaningful-update-session', cwd, timestamp: '2026-01-01T00:00:00.000Z' },
     { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'please review the meaningful update path' }] } },
