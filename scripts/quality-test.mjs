@@ -1,34 +1,19 @@
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname);
 const tempRoot = mkdtempSync(join(tmpdir(), 'pi-hybrid-memory-quality-'));
+process.once('exit', () => rmSync(tempRoot, { recursive: true, force: true }));
 const tempHome = join(tempRoot, 'home');
-const realHome = process.env.HOME;
 mkdirSync(tempHome, { recursive: true });
 process.env.HOME = tempHome;
 
-function linkPackage(moduleRoot, packageName, target) {
-  const link = join(moduleRoot, 'node_modules', ...packageName.split('/'));
-  mkdirSync(dirname(link), { recursive: true });
-  if (!existsSync(link)) symlinkSync(target, link, 'dir');
-}
-
-const moduleRoot = join(tempRoot, 'module');
-mkdirSync(moduleRoot, { recursive: true });
-const globalNodeModules = execFileSync('npm', ['root', '-g'], { encoding: 'utf8', env: { ...process.env, HOME: realHome } }).trim();
-const piRoot = join(globalNodeModules, '@earendil-works', 'pi-coding-agent');
-linkPackage(moduleRoot, '@earendil-works/pi-ai', join(piRoot, 'node_modules', '@earendil-works', 'pi-ai'));
-linkPackage(moduleRoot, '@earendil-works/pi-coding-agent', piRoot);
-linkPackage(moduleRoot, '@earendil-works/pi-tui', join(piRoot, 'node_modules', '@earendil-works', 'pi-tui'));
-linkPackage(moduleRoot, 'typebox', join(piRoot, 'node_modules', 'typebox'));
-const moduleFile = join(moduleRoot, 'hybrid-memory.ts');
-copyFileSync(join(repoRoot, 'extensions', 'hybrid-memory.ts'), moduleFile);
+const moduleFile = join(repoRoot, 'extensions', 'hybrid-memory.ts');
 const extension = (await import(pathToFileURL(moduleFile).href)).default;
 
 function projectMemoryDir(cwd) {

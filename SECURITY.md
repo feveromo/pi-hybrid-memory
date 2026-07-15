@@ -14,6 +14,8 @@ This project is pre-1.0. Security fixes target the latest `main` branch and the 
 - unsafe path handling in commands, tools, session import, repo-map generation, audit reports, or purge flows
 - `/hmemory-purge` failing to remove all JSONL versions of a selected record
 - model-audit behavior that applies unvalidated or unexpectedly broad changes
+- cross-process races that lose, duplicate, or partially write memory mutations
+- unsafe symlink traversal into memory, session, or repo-map paths
 
 ## Out of scope
 
@@ -31,7 +33,9 @@ If private reporting is not available, open a minimal public issue that says you
 ## Hardening principles
 
 - Memory is private user data.
+- Memory directories and files default to owner-only permissions, and generated state is replaced atomically.
 - Retrieved memory is context, not authority.
 - Redaction is best effort and should be tested continuously.
 - Cleanup should be auditable; hard deletion should be explicit.
+- Mutations must be serialized across concurrent tools and independent Pi processes.
 - Model-assisted cleanup must remain bounded, redacted, validated, and user-directed.

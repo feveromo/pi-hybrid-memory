@@ -1,154 +1,64 @@
-import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
-const source = readFileSync(new URL('../extensions/hybrid-memory.ts', import.meta.url), 'utf8');
-const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const root = resolve(new URL('..', import.meta.url).pathname);
+const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const entry = packageJson.pi?.extensions?.[0];
 
-assert.match(source, /sk-\(\?:ant-\|proj-\)\?\[A-Za-z0-9_-\]\{16,\}/, 'redaction should cover plain sk-... plus sk-ant-/sk-proj- keys');
-assert.doesNotMatch(source.match(/function durablePreferencePrompt[\s\S]*?\n}/)?.[0] ?? '', /\bi want\b/i, 'session preference import should not treat broad "i want" as durable');
-assert.match(source, /function hybridMemoryConfig/, 'tuning knobs should load from Pi settings');
-assert.match(source, /enabled: true/, 'hybrid memory should be enabled by default and disableable through settings');
-assert.match(source, /pi\.registerCommand\("hmemory-toggle"/, 'hybrid memory should expose a toggle command');
-assert.match(source, /setActiveTools/, 'disabled hybrid memory should remove agent-callable memory tools');
-assert.match(source, /withFileMutationQueue/, 'mutating memory tools should use Pi file mutation queue for parallel tool safety');
-assert.match(source, /function withHybridMemoryMutation/, 'mutating memory tools should share a local memory mutation wrapper');
-assert.match(source, /withFileMutationQueue\(join\(p\.user, RECORDS\)/, 'memory mutation queue should serialize user records first');
-assert.match(source, /withFileMutationQueue\(join\(p\.project, RECORDS\)/, 'memory mutation queue should serialize project records too');
-assert.match(source, /const recordsFileCache = new Map/, 'record reads should use an mtime/size cache instead of reparsing JSONL on every hot path');
-assert.match(source, /function latestRecordsForCwd/, 'latest-head memory retrieval should use a read-through cache');
-assert.match(source, /function appendRecordsBatch/, 'session imports and cleanup should batch append records before regenerating summaries');
-assert.match(source, /const max = boundedNumber\(args\.trim\(\), hybridMemoryConfig\(ctx\.cwd\)\.pruneActiveSessionRecaps, 3, 100\);/, '/hmemory-prune should use boundedNumber with the configured default for invalid input');
-assert.match(source, /\["ls-files", "--others", "--exclude-standard"\]/, 'repo map should include untracked non-ignored git files');
-assert.match(source, /added after repo map generation/, 'repo map staleness should detect newly added files');
-assert.match(source, /slice\(0, config\.repoMapFileLimit\)/, 'repo-map file cap should be configurable');
-assert.match(source, /function readRepoMapContent/, 'repo map should still extract bounded start/middle/end context from oversized source files');
-assert.match(source, /repo map: omitted middle of large file/, 'large-file repo-map extraction should mark sampled content boundaries');
-assert.match(source, /boundaryPadding/, 'large-file repo-map sampling should include small boundary overlap so declarations near sample edges survive');
-assert.match(source, /readRepoMapContent\(abs, size, config\.repoMapReadMaxBytes\)/, 'repo-map read-size cap should be enforced through bounded content sampling');
-assert.match(source, /!path\.startsWith\("\.pi\/"\)/, 'repo map should avoid indexing project .pi memory state');
-assert.match(source, /REPO_NOISE_TOP_LEVEL/, 'repo map should define a noise filter for home-directory caches');
-assert.match(source, /isNoisyRepoPath\(path\)/, 'repo map should skip noisy home/cache paths before injection');
-assert.match(source, /function isHomeRepoNoise/, 'repo map should apply extra root-aware filtering when cwd is the home directory');
-assert.match(source, /HOME_REPO_NOISE_TOP_LEVEL/, 'home repo maps should not index Dev, node_modules, backups, or personal folders');
-assert.match(source, /id_rsa\|id_dsa\|id_ecdsa\|id_ed25519\|adbkey/, 'sensitive path filter should cover Android adb keys');
-assert.match(source, /\.npmrc\|\\\.netrc\|\\\.emulator_console_auth_token/, 'sensitive path filter should cover common home credential files');
-assert.match(source, /function autoCapturePromptMemory/, 'durable preference prompts should be auto-captured before the agent starts');
-assert.match(source, /function looksLikePastedReviewPrompt/, 'pasted reviews should not be auto-captured as preferences');
-assert.match(source, /function looksLikeContextInspectionText/, 'sessions that quote injected context should be treated as diagnostic noise');
-assert.match(source, /looksLikeContextInspectionText\(text\)/, 'context-inspection prompts should be excluded before session recap import');
-assert.match(source, /context-inspection-recap/, 'context-inspection recaps should be prunable stale');
-assert.match(source, /function isUsefulProjectCommand/, 'session command recipes should skip generic inspection commands');
-assert.match(source, /function staleCodebaseNoteReason/, 'codebase notes should become stale when referenced source files change');
-assert.match(source, /staleCodebaseNotesOnFileChange: true/, 'codebase-note staleness should be enabled by default');
-assert.match(source, /function isActiveRecord/, 'memory visibility should share one active-status predicate');
-assert.match(source, /isActiveRecord\(x\.record\) && x\.score > 0 && shouldIncludeSearchHit\(cwd, x\.record, query\)/, 'pinned records should still need scoped relevance before search/injection');
-assert.match(source, /function readFirstJsonlObject/, 'project session filtering should read only the first JSONL object');
-assert.doesNotMatch(source, /readJsonlObjects\(file\)\[0\]/, 'project session filtering should not parse whole session files');
-assert.match(source, /function normalizeMemoryRecord/, 'manual JSONL records should be normalized before stats/search use them');
-assert.match(source, /function recordMeaningfulSnapshot/, 'stable imports should append a new head when meaningful metadata changes');
-assert.match(source, /SESSION_IMPORT_MAX_BYTES/, 'current-session auto-import should share the bounded session size guard');
-assert.match(source, /repoMapStalenessCached\(ctx\.cwd\)/, 'status chrome should use cached repo-map staleness');
-assert.match(source, /ctx\.ui\.setStatus\("hybrid-memory", undefined\);/, 'status chrome should keep the aggregate footer slot quiet');
-assert.match(source, /const active = `\$\{icon\}\$\{ctx\.ui\.theme\.fg\("success", String\(counts\.active\)\)\} \$\{ctx\.ui\.theme\.fg\("dim", "active"\)\}`;/, 'compact status chrome should still spell out active count');
-assert.match(source, /const scopes = \[user, project\]\.filter\(Boolean\)\.join\("\/"\);/, 'compact status chrome should omit zero-count scope segments cleanly');
-assert.match(source, /ctx\.ui\.setStatus\("hybrid-memory-compact", \[active, scopes, pinned, repo\]\.filter\(Boolean\)\.join\(" "\)\);/, 'compact status chrome should include labeled active/scope/pinned/repo health segments without wide bullets');
-assert.doesNotMatch(source, /\$\{counts\.active\}a|\$\{counts\.user\}u|\$\{counts\.project\}p/, 'status chrome should not use unexplained a/u/p abbreviations');
-assert.match(source, /pi\.on\("agent_end"/, 'current session should be re-imported after each agent turn');
-assert.match(source, /type SessionImportOptions = \{ includeCommandRecipes\?: boolean \};/, 'session import should support lower-churn current-session options');
-assert.match(source, /importSessions\(cwd, \[sessionFile\], \{ includeCommandRecipes: false \}\)/, 'current live-session auto-import should not churn command-recipe records every turn');
-assert.match(source, /const recentSessions = importSessions\(cwd, recentFiles\);/, 'startup refresh should still mine recipes from recent completed sessions');
-assert.match(source, /stableId\("preference", content, `auto-prompt:\$\{content\}`\)/, 'auto-captured and session-imported preferences should dedupe by content');
-assert.match(source, /const MAX_INJECT_CHARS = 4200;/, 'memory injection should stay lean by default');
-assert.match(source, /config\.maxInjectChars/, 'memory injection cap should be configurable');
-assert.match(source, /config\.injectSectionLimits\[title\]/, 'per-section injection limits should be configurable');
-assert.match(source, /function appendInjectionSection/, 'prompt injection should budget by section instead of slicing the whole block');
-assert.match(source, /pi\.on\("context"/, 'memory injection should use the ephemeral context hook instead of permanently modifying the system prompt');
-assert.match(source, /customType: HYBRID_MEMORY_CONTEXT_TYPE/, 'context injection should be labeled so stale injected messages can be filtered');
-assert.match(source, /lastPromptByCwd\.get\(ctx\.cwd\)/, 'context injection should fall back to the last before_agent_start prompt if needed');
-assert.doesNotMatch(source, /systemPrompt: event\.systemPrompt \+ block/, 'memory injection should not append untrusted retrieved records into the system prompt');
-assert.match(source, /additional lower-ranked/, 'injection truncation should explain omitted lower-ranked records or matches');
-assert.match(source, /Codebase search hints from the current working tree; may be noisy or stale\./, 'repo-map injection should label matches as noisy/stale search hints');
-assert.match(source, /function displayRepoSymbols/, 'repo-map injection should filter low-value parser symbols from display');
-assert.match(source, /"Global Decisions\/Facts": 3/, 'user-scoped decisions/facts should have an injection section');
-assert.match(source, /if \(!hybridMemoryEnabled\(cwd\)\) return "";/, 'disabled hybrid memory should skip prompt injection');
-assert.match(source, /function displaySessionRecap/, 'session recaps should be rendered as clean outcomes and topics');
-assert.match(source, /function dedupeInjectionRecords/, 'injected memory should dedupe noisy near-identical records');
-assert.match(source, /function shouldInjectSessionRecap/, 'session recap injection should hide diagnostic context-inspection recaps');
-assert.match(source, /function sessionRecapCommitKeys/, 'session recap injection should collapse repeated commit recaps');
-assert.match(source, /function isLowSignalSessionFilePath/, 'session recap file displays should hide low-signal screenshot/media paths');
-assert.match(source, /function isPackageDocsPath/, 'session recap file displays should identify package/docs paths as low-priority');
-assert.match(source, /function injectedRecordFilePaths/, 'injected file suffixes should prefer project-local session recap paths');
-assert.match(source, /const projectLocal = paths\.filter\(\(p\) => isProjectDisplayPath\(cwd, p\)\);/, 'session recap injection should prefer project-local file paths');
-assert.match(source, /const withoutPackageDocs = paths\.filter\(\(p\) => !isPackageDocsPath\(p\)\);/, 'session recap injection should hide package/docs paths when better paths exist');
-assert.match(source, /function distinctiveQueryTerms/, 'global user technical memories should require distinctive prompt matches');
-assert.match(source, /const RECIPE_DISPLAY_COMMAND_LIMIT = 6;/, 'recipe injection should show six short validation commands before +N more');
-assert.match(source, /function shouldInjectPinnedByDefault/, 'pinned global records should still be scoped before default injection');
-assert.match(source, /repoMapAutoInjectMinDistinctiveTerms/, 'automatic repo-map injection should require distinctive prompt matches');
-assert.match(source, /function commandFamilyKey/, 'recipe commands should dedupe by command family');
-assert.match(source, /function visibleWidth/, 'TUI padding should use terminal cell widths for Unicode icons');
-assert.match(source, /import \{[^}]*Text[^}]*\} from "@earendil-works\/pi-tui";/, 'custom tool renderers should use the official Pi TUI Text component');
-assert.equal(packageJson.peerDependencies?.['@earendil-works/pi-tui'], '*', 'package should declare pi-tui as a peer dependency for custom renderers');
-assert.match(source, /function memoryKindIcon/, 'memory review and tool renderers should share kind icons');
-assert.match(source, /case "preference": return "💜";/, 'preference memories should keep a friendly icon');
-assert.match(source, /const labelText = padVisible\(reviewKindLabel\(r\), 18\)/, 'memory review kind labels should use a fixed-width Unicode-safe column');
-assert.match(source, /const pin = padVisible\(r\.pinned \? warp\.pink\("📌"\) : "", 2\)/, 'memory review pinned marker should keep the friendly pinned emoji in a fixed-width slot');
-assert.match(source, /const REVIEW_LIST_ROWS = 11;/, 'memory review should use a fixed-size list viewport');
-assert.match(source, /for \(let i = 0; i < REVIEW_LIST_ROWS; i\+\+\)/, 'memory review should pad list rows to keep overlay height stable');
-assert.match(source, /pi\.registerCommand\("hmemory-doctor"/, 'memory doctor command should be registered for deterministic curation');
-assert.match(source, /function memoryStatsSnapshot/, 'memory stats should distinguish active/inactive counts by scope/status/kind');
-assert.match(source, /function searchRecordsWithOptions/, 'memory search should support filtered active/all scope/kind/status queries');
-assert.match(source, /function scoreRecordWithSearchOptions/, 'status-specific inactive searches should not be hidden by normal stale/superseded scoring penalties');
-assert.match(source, /function strongQueryTerms/, 'exact package/path-like memory searches should filter unrelated generic matches');
-assert.match(source, /Use one hybrid_memory_search call for both user and project memory by default/, 'memory search tool guidance should discourage duplicate identical scope checks');
-assert.match(source, /name: "hybrid_memory_doctor"/, 'memory doctor should be available as a tool for agents');
-assert.match(source, /writeMemoryDoctorReport/, 'memory doctor should write a reviewable before/after report');
-assert.match(source, /status: Type\.Optional\(StringEnum\(searchStatusEnum\)\)/, 'hybrid_memory_search should expose status filters');
-assert.match(source, /includeInactive: Type\.Optional\(Type\.Boolean\(\)\)/, 'hybrid_memory_search should expose an includeInactive/all-history option');
-assert.match(source, /function formatForgetPreview/, '/hmemory-forget should preview matching records when given query text instead of an id');
-assert.match(source, /tombstone: Type\.Optional\(Type\.Boolean\(\)\)/, 'hybrid_memory_forget should support tiny do-not-suggest tombstones for removed items');
-assert.match(source, /tombstoneNote: Type\.Optional\(Type\.String\(\)\)/, 'hybrid_memory_forget should expose tombstoneNote for concise negative preferences');
-assert.match(source, /pi\.registerCommand\("hmemory-audit"/, 'memory audit command should be registered');
-assert.match(source, /pi\.registerCommand\("hmemory-purge"/, 'memory purge command should be available as an explicit hard-delete escape hatch');
-assert.match(source, /complete\(\n    ctx\.model,\n    \{ systemPrompt: MEMORY_AUDIT_SYSTEM_PROMPT, messages: \[message\] \}/, 'memory audit should use the selected Pi model through pi-ai complete');
-assert.match(source, /function applyMemoryAuditPlan/, 'memory audit should be able to apply validated structured cleanup actions');
-assert.match(source, /type\": \"merge_records\"/, 'memory audit prompt should support model-proposed dedupe merges');
-assert.match(source, /lastAuditAppliedAt/, 'memory audit should persist apply metadata in project state');
-assert.match(source, /clean\.startsWith\("--scope"\)/, 'memory audit should support scope filters for targeted cleanup');
-assert.match(source, /clean\.startsWith\("--page"\)/, 'memory audit should support paging through capped active records');
-assert.match(source, /function chooseMemoryAuditActionIndexes/, 'memory audit should let TUI users select individual actions before applying');
-assert.match(source, /Scope review hints:/, 'memory audit packet should include deterministic scope review hints');
-assert.match(source, /preferenceReviewHint:/, 'memory audit record blocks should include deterministic preference review hints');
-assert.match(source, /warp\.cyan\(audit\.model\)/, 'memory audit action overlay should show selected model context');
-assert.match(source, /reportText = compactText\(audit\.reportPath/, 'memory audit action overlay should show the saved report path');
-assert.match(source, /Record writes applied/, 'memory audit report should distinguish proposed actions from record writes');
-assert.match(source, /function createMemoryAuditProgress/, 'memory audit should show a staged progress UI while the model call runs');
-assert.match(source, /function codebaseNoteFileEvidence/, 'codebase notes should store lightweight file freshness evidence');
-assert.match(source, /CancellableLoader/, 'memory audit progress UI should remain cancellable');
-assert.match(source, /const visualAudit = await ctx\.ui\.custom<MemoryAuditResult \| null>/, 'memory audit should distinguish visual UI result from non-visual fallback');
-assert.match(source, /if \(visualAudit === null\) return ctx\.ui\.notify\("memory audit cancelled", "info"\);/, 'memory audit should treat null as explicit user cancel');
-assert.match(source, /if \(!audit\) \{\n          audit = await generateMemoryAudit/, 'memory audit should fall back when custom UI is unavailable in non-TUI modes');
-assert.doesNotMatch(source.match(/async function generateMemoryAudit[\s\S]*?\n}/)?.[0] ?? '', /temperature:/, 'memory audit should not pass temperature because Codex models reject it');
-assert.match(source, /function asInactiveStatus/, 'memory audit set_status and merge source statuses should stay inactive-only');
-assert.match(source, /const fileText = files\.length \? files\.join\("  "\) : warp\.dim\("—"\);/, 'memory review should reserve the files row to keep overlay height stable');
-assert.match(source, /theme\.bg\(selected \? "selectedBg" : "customMessageBg", text\)/, 'memory review overlay rows should use a theme background so underlying transcript does not show through');
-assert.match(source, /if \(code\.startsWith\("38;"\)\) return `\\x1b\[\$\{code\}m\$\{text\}\\x1b\[39m`;/, 'review overlay foreground colors should not clear row backgrounds with full SGR resets');
-assert.match(source, /for \(let i = 0; i < REVIEW_DETAIL_ROWS; i\+\+\) lines\.push\(row\(detailRows\[i\] \?\? ""\)\);/, 'memory review should render a fixed-size details footer');
-assert.match(source, /function memoryToolCall/, 'hybrid memory tools should share polished call rendering helpers');
-assert.match(source, /return new Text\(text, 0, 0\);/, 'hybrid memory tool renderers should return Text components');
-assert.match(source, /renderCall\(args, theme\)/, 'hybrid memory tools should provide custom call rendering');
-assert.match(source, /renderResult\(result, \{ expanded, isPartial \}, theme\)/, 'hybrid memory tools should provide custom result rendering with expanded and partial states');
-assert.equal((source.match(/name: "hybrid_memory_/g) ?? []).length, (source.match(/renderCall\(args, theme\)/g) ?? []).length, 'every hybrid memory tool should render a custom call row');
-assert.equal((source.match(/name: "hybrid_memory_/g) ?? []).length, (source.match(/renderResult\(result, \{ expanded, isPartial \}, theme\)/g) ?? []).length, 'every hybrid memory tool should render a custom result row');
-assert.doesNotMatch(source, /reviewKindLabel\(r\)\.padEnd/, 'memory review should not pad icon labels by raw string length');
-assert.match(source, /"Relevant Session Recaps": 2/, 'session recap injection should be tightly capped by default');
-assert.match(source, /Prior session \(\$\{location\}\)/, 'session recaps should use compact location labels instead of raw cwd prefixes');
-assert.match(source, /DEFAULT_AUTO_PRUNE_ACTIVE_SESSION_RECAPS = 8/, 'turn/startup refresh should prune old session recap noise by default');
-assert.match(source, /autoCapturePreferences: DEFAULT_AUTO_CAPTURE_PREFERENCES/, 'auto-capture preferences should be configurable with an explicit default');
-assert.match(source, /pruneMemory\(cwd, hybridMemoryConfig\(cwd\)\.autoPruneActiveSessionRecaps\)/, 'turn refresh should use the configured auto-prune recap cap');
-assert.match(source, /pruneMemory\(cwd, config\.autoPruneActiveSessionRecaps\)/, 'startup refresh should use the configured auto-prune recap cap');
-assert.doesNotMatch(source, /function extractSymbols\(/, 'unused extractSymbols wrapper should stay removed');
-assert.match(source, /finally \{\n        updateMemoryChrome\(ctx\);\n      \}/, 'long-running commands should restore the memory chrome after temporary statuses');
-assert.doesNotMatch(source, /registerCommand\("hmemory-widget"/, 'persistent hmemory widget command should stay removed');
-assert.match(source, /clearRemovedWidget\(ctx\);/, 'extension startup/reload should clear any old persistent hybrid-memory widget');
+assert.equal(entry, './extensions/hybrid-memory.ts', 'package should expose the stable Pi extension entrypoint');
+assert(existsSync(join(root, entry)), 'Pi extension entrypoint should exist');
+assert.match(packageJson.engines?.node ?? '', /^>=22\.19\.0$/, 'package should declare Pi-compatible Node support');
+for (const dependency of ['@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox']) {
+  assert.equal(packageJson.peerDependencies?.[dependency], '*', `${dependency} should remain a Pi-provided wildcard peer`);
+  assert(packageJson.devDependencies?.[dependency], `${dependency} should be pinned for reproducible development`);
+}
+assert.match(packageJson.scripts?.test ?? '', /typecheck/, 'the default test gate should include TypeScript validation');
 
-console.log('pi-hybrid-memory tests ok');
+const entrySource = readFileSync(join(root, entry), 'utf8');
+assert.match(entrySource, /runtime\/registration\.ts/, 'the stable Pi entrypoint should stay thin');
+assert(entrySource.split(/\n/).filter(Boolean).length <= 3, 'the stable Pi entrypoint should not become a monolith again');
+const runtimeDir = join(root, 'extensions', 'runtime');
+const runtimeFiles = readdirSync(runtimeDir).filter((file) => file.endsWith('.ts'));
+for (const required of ['configuration.ts', 'retrieval.ts', 'memory-purge.ts', 'command-args.ts', 'audit-ui.ts']) {
+  assert(runtimeFiles.includes(required), `${required} should keep its runtime responsibility isolated`);
+}
+const runtimeSources = runtimeFiles.map((file) => ({ file, text: readFileSync(join(runtimeDir, file), 'utf8') }));
+for (const { file, text } of runtimeSources) {
+  assert(text.split(/\n/).length <= 650, `${file} is becoming a god file; split it at a responsibility boundary`);
+}
+const runtimeSourceByFile = new Map(runtimeSources.map(({ file, text }) => [file, text]));
+const runtimeDependencies = new Map(runtimeSources.map(({ file, text }) => [
+  file,
+  [...text.matchAll(/from\s+["'](\.\/[^"']+\.ts)["']/g)]
+    .map((match) => match[1].slice(2))
+    .filter((dependency) => runtimeSourceByFile.has(dependency)),
+]));
+const visitState = new Map();
+const visitStack = [];
+function assertAcyclicRuntime(file) {
+  if (visitState.get(file) === 2) return;
+  if (visitState.get(file) === 1) {
+    const cycleStart = visitStack.indexOf(file);
+    assert.fail(`runtime dependency cycle: ${[...visitStack.slice(cycleStart), file].join(' -> ')}`);
+  }
+  visitState.set(file, 1);
+  visitStack.push(file);
+  for (const dependency of runtimeDependencies.get(file) ?? []) assertAcyclicRuntime(dependency);
+  visitStack.pop();
+  visitState.set(file, 2);
+}
+for (const file of runtimeFiles) assertAcyclicRuntime(file);
+const source = runtimeSources.map(({ text }) => text).join('\n');
+assert.match(source, /from "@earendil-works\/pi-ai\/compat"/, 'legacy completion must use Pi’s explicit compatibility entrypoint');
+assert.doesNotMatch(source, /import\s*\{[^}]*\bcomplete\b[^}]*\}\s*from\s*"@earendil-works\/pi-ai"/, 'deprecated root completion import must not return');
+assert.doesNotMatch(source, /ctx\.ui\.notify\([^;]*,\s*"success"\s*\)/s, 'notification levels must stay within Pi’s public API');
+
+const toolNames = [...source.matchAll(/name:\s*"(hybrid_memory_[^"]+)"/g)].map((match) => match[1]);
+assert.equal(new Set(toolNames).size, 10, 'all ten public memory tools should remain registered exactly once');
+assert(toolNames.includes('hybrid_memory_explain'), 'read-only retrieval explanation tool should be registered');
+for (const command of ['hmemory', 'hmemory-health', 'hmemory-audit', 'hmemory-purge', 'hmemory-toggle']) {
+  assert(source.includes(`registerCommand("${command}"`), `/${command} should remain registered`);
+}
+
+console.log('pi-hybrid-memory package/registration/architecture tests ok');

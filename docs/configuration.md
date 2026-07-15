@@ -1,5 +1,7 @@
 # Configuration
 
+`pi-hybrid-memory` requires Node.js 22.19 or newer.
+
 ## Install as a Pi package
 
 Install it directly from GitHub:
@@ -60,6 +62,8 @@ Project memory:
 
 Run `/hmemory-files` to show the exact paths for the current session.
 
+Memory directories are created with owner-only permissions (`0700`) and files with `0600`. Generated state and settings updates use atomic replacement, and symlinked memory roots/files are rejected.
+
 ## Git ignore recommendation
 
 Project memory is runtime state. Add `.pi/` to the project `.gitignore` unless you intentionally want to version generated memory files.
@@ -89,6 +93,7 @@ For larger or older projects, use an explicit command:
 ```text
 /hmemory-health
 /hmemory-config
+/hmemory-explain <prompt>
 /hmemory-toggle on|off [--global|--project]
 /hmemory-prune [maxActiveRecaps]
 /hmemory-review

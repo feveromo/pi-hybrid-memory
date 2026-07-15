@@ -15,6 +15,8 @@ By default, records are written to local files:
 
 The extension does not require a hosted service, vector database, or external graph database.
 
+Memory directories are kept at mode `0700` and memory files at `0600`. The extension rejects symlinked memory directories/files at the store boundary. Generated summaries, state, repo maps, context, and audit reports are published atomically so a crash cannot expose a half-written replacement.
+
 ## Redaction
 
 Before records are stored or injected, text is passed through secret/path redaction. Current coverage includes common patterns such as:
@@ -32,7 +34,7 @@ Redaction is best-effort. Do not intentionally store secrets in memory.
 
 The repo map excludes sensitive paths, `.pi/`, `.git/`, `node_modules/`, noisy home/cache paths, common binary/archive/database files, and other runtime output.
 
-This reduces accidental exposure in generated summaries and prompt-time repo-map matches.
+Git discovery is NUL-delimited, fallback traversal skips symlinks and repeated directory inodes, and every file is checked by lexical and real path before reading. Persisted repo-map JSON is size-capped and schema-normalized before it can reach generated summaries or prompt-time matches.
 
 ## Untrusted memory injection
 
@@ -53,11 +55,15 @@ Applied changes are append-only:
 - merges create a new superseding record and mark source records superseded
 - records are not physically deleted by audit/forget/doctor flows
 
+Every audit plan is tied to an immutable snapshot of the records actually sent to the model. Apply rejects off-packet ids, records changed since packet creation, inactive heads, invalid create scopes/kinds, and cross-scope/cross-kind merges. Accepted updates are staged and appended in one local batch.
+
 In interactive TUI mode, `/hmemory-audit` shows a per-action review overlay before applying unless you pass `apply`. Use `preview` for report-only. Reports are saved under `<project>/.pi/hybrid-memory/audits/`.
 
 ## Hard-delete escape hatch
 
 Use `/hmemory-purge <scoped-id> --force` only for privacy cleanup where append-only forgetting is not enough. It rewrites the matching scope's `records.jsonl` and removes every version of the selected `scope:id`, then regenerates summaries/context. The audit marker records the id and number of removed JSONL entries, not the purged content.
+
+Purge runs inside both Pi's in-process mutation queue and ordered cross-process filesystem locks. It removes parseable historical versions regardless of schema, refuses a target when malformed JSONL might still contain that id, fsyncs a private temporary file, and atomically renames it into place.
 
 ## Session import safety
 
@@ -68,6 +74,7 @@ Session import is conservative:
 - stores bounded command recipes from prior sessions
 - redacts text and paths before writing records
 - prunes duplicate/old project session recaps
+- accepts only bounded regular `.jsonl` files, rejects final-path symlinks, constrains agent-callable imports to Pi's session root, and skips symlinked directory trees during discovery
 
 Use `/hmemory-review`, `/hmemory-show`, and the generated `summary.md` files to audit imported memories. Auto-capture can be disabled or widened with `hybridMemory.autoCapture.preferences` (`off`, `explicit`, or `heuristic`).
 

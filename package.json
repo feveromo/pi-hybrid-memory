@@ -12,6 +12,9 @@
     "local-first"
   ],
   "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/feveromo/pi-hybrid-memory.git"
@@ -35,13 +38,25 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.80.7",
+    "@earendil-works/pi-coding-agent": "0.80.7",
+    "@earendil-works/pi-tui": "0.80.7",
+    "typebox": "1.1.38",
+    "typescript": "7.0.2"
+  },
   "scripts": {
-    "test": "node scripts/test.mjs && node scripts/behavior-test.mjs && node scripts/quality-test.mjs && npm run test:fixture",
+    "test": "npm run typecheck && node scripts/test.mjs && node scripts/docs-test.mjs && node scripts/security-test.mjs && node scripts/behavior-test.mjs && node scripts/quality-test.mjs && npm run test:fixture && npm run benchmark",
     "test:source": "node scripts/test.mjs",
+    "test:docs": "node scripts/docs-test.mjs",
     "test:quality": "node scripts/quality-test.mjs",
+    "test:security": "node scripts/security-test.mjs",
     "test:fixture": "node scripts/fixture-test.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "typecheck": "tsc --noEmit",
     "validate": "npm test && npm run smoke:load",
-    "smoke:load": "pi --no-session --no-extensions -e . -p '/hmemory-health'",
+    "release:check": "npm run validate && npm audit --audit-level=high && npm pack --dry-run",
+    "smoke:load": "node scripts/smoke-load.mjs",
     "smoke": "pi --no-session --no-extensions -e . -p --model openai-codex/gpt-5.4-mini 'Reply exactly: pi-hybrid-memory-ok'"
   }
 }
