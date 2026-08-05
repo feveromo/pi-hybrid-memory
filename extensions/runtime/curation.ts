@@ -6,7 +6,7 @@ import { isMemoryArtifactPath, redactSecrets, sanitizeFilePaths } from "../core/
 import { compactText } from "../core/text.ts";
 import { atomicWriteFileSync } from "../core/atomic-file.ts";
 
-import { AUDITS, ensureDir, nowIso, stableId, pathContains, findProjectRoot, projectMemoryDir, paths, latestRecordsForCwd, isActiveRecord, activeRecords, recordStatus, recordKey, appendRecordsBatch } from "./foundation.ts";
+import { AUDITS, ensureDir, nowIso, stableId, pathContains, findProjectRoot, projectMemoryDir, type paths, latestRecordsForCwd, isActiveRecord, activeRecords, recordStatus, recordKey, appendRecordsBatch } from "./foundation.ts";
 import { hybridMemoryConfig } from "./configuration.ts";
 import { repoMapStaleness } from "./repo-context.ts";
 import { looksLikePastedReviewPrompt, looksLikeContextInspectionText, splitRecipeCommands, isUsefulProjectCommand, recipeCommandFamilyKeys } from "./sessions.ts";
@@ -19,6 +19,9 @@ export type MemoryDoctorPlan = { generatedAt: string; maxActiveSessionRecaps: nu
 export type MemoryDoctorApplyResult = { applied: number; updated: string[]; skipped: string[] };
 
 export type PruneResult = { staleMarked: number; rollupCreated?: MemoryRecord; duplicateGroups: number };
+
+const STALE_WORK_ITEM_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+const STALE_SESSION_RECAP_AFTER_MS = 45 * 24 * 60 * 60 * 1000;
 
 function emptyStatusCounts(): Record<MemoryStatus, number> {
   return { active: 0, done: 0, superseded: 0, stale: 0 };
@@ -215,13 +218,68 @@ function staleCodebaseNoteReason(cwd: string, r: MemoryRecord) {
   return undefined;
 }
 
+function temporalStaleReason(r: MemoryRecord) {
+  const updatedAt = Date.parse(r.updatedAt);
+  if (!Number.isFinite(updatedAt)) return undefined;
+  const age = Date.now() - updatedAt;
+  if (r.kind === "work_item" && age > STALE_WORK_ITEM_AFTER_MS) return "inactive-work-item-30d";
+  if (r.kind === "session_recap" && age > STALE_SESSION_RECAP_AFTER_MS) return "old-session-recap-45d";
+  return undefined;
+}
+
 export function staleReasonForMemory(cwd: string, r: MemoryRecord) {
   if (r.pinned) return undefined;
-  return noisyAutoPreferenceReason(r) ?? noisySessionRecapReason(r) ?? noisyRecipeReason(r) ?? staleCodebaseNoteReason(cwd, r);
+  return noisyAutoPreferenceReason(r) ?? noisySessionRecapReason(r) ?? noisyRecipeReason(r) ?? temporalStaleReason(r) ?? staleCodebaseNoteReason(cwd, r);
 }
 
 function preferredMemoryKeeper(a: MemoryRecord, b: MemoryRecord) {
   return Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.salience - a.salience || b.updatedAt.localeCompare(a.updatedAt);
+}
+
+function normalizedMemoryContent(r: MemoryRecord) {
+  return r.content.toLowerCase().replace(/[^a-z0-9_.:/-]+/g, " ").trim();
+}
+
+function sessionCommitKeys(r: MemoryRecord) {
+  if (r.kind !== "session_recap") return [];
+  return [...new Set(r.content.match(/\b[0-9a-f]{7,40}\b/gi)?.map((hash) => hash.toLowerCase()) ?? [])];
+}
+
+type DuplicateMemoryGroup = { records: MemoryRecord[]; reason: "duplicate-subject" | "duplicate-content" | "duplicate-session-commit" };
+
+function duplicateMemoryGroups(records: MemoryRecord[]): DuplicateMemoryGroup[] {
+  const keyed = new Map<string, MemoryRecord[]>();
+  const add = (key: string, record: MemoryRecord) => {
+    const group = keyed.get(key) ?? [];
+    group.push(record);
+    keyed.set(key, group);
+  };
+  for (const record of records) {
+    add(`subject:${record.scope}:${record.kind}:${record.subject.toLowerCase()}`, record);
+    const content = normalizedMemoryContent(record);
+    if (content.length >= 24) add(`content:${record.scope}:${record.kind}:${content}`, record);
+    for (const commit of sessionCommitKeys(record)) add(`commit:${record.scope}:${commit}`, record);
+  }
+  const seen = new Set<string>();
+  const groups: DuplicateMemoryGroup[] = [];
+  for (const [key, recordsWithSameMeaning] of keyed) {
+    if (recordsWithSameMeaning.length < 2) continue;
+    const signature = recordsWithSameMeaning.map(recordKey).sort((a, b) => a.localeCompare(b)).join("|");
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    let reason: DuplicateMemoryGroup["reason"] = "duplicate-session-commit";
+    if (key.startsWith("subject:")) reason = "duplicate-subject";
+    else if (key.startsWith("content:")) reason = "duplicate-content";
+    groups.push({ records: recordsWithSameMeaning, reason });
+  }
+  return groups;
+}
+
+function recapRollupFragment(r: MemoryRecord) {
+  return compactText(r.content
+    .replace(/\s+Tools:\s+.*$/i, "")
+    .replace(/^Prior session \([^)]+\):\s*/i, "")
+    .replace(/\s+Outcomes:\s*/i, " — "), 100);
 }
 
 function memoryCurationCandidates(cwd: string, maxActiveSessionRecaps = 12): MemoryDoctorCandidate[] {
@@ -233,25 +291,19 @@ function memoryCurationCandidates(cwd: string, maxActiveSessionRecaps = 12): Mem
     if (!candidates.has(key)) candidates.set(key, { record, action: "mark_stale", reason });
   };
 
-  const bySubject = new Map<string, MemoryRecord[]>();
   for (const r of active) {
     const hygieneReason = staleReasonForMemory(cwd, r);
     if (hygieneReason) add(r, hygieneReason);
-    const key = `${r.scope}:${r.kind}:${r.subject.toLowerCase()}`;
-    const arr = bySubject.get(key) ?? [];
-    arr.push(r);
-    bySubject.set(key, arr);
   }
-  for (const group of bySubject.values()) {
-    if (group.length < 2) continue;
-    group.sort(preferredMemoryKeeper);
-    for (const r of group.slice(1)) add(r, "duplicate-subject");
+  for (const duplicate of duplicateMemoryGroups(active)) {
+    duplicate.records.sort(preferredMemoryKeeper);
+    for (const r of duplicate.records.slice(1)) add(r, duplicate.reason);
   }
 
   const recipeGroups = new Map<string, MemoryRecord[]>();
   const recipeCommandSets = active
     .filter((x) => x.kind === "recipe")
-    .map((r) => ({ r, commands: recipeCommandFamilyKeys(r.content).sort() }))
+    .map((r) => ({ r, commands: recipeCommandFamilyKeys(r.content).sort((a, b) => a.localeCompare(b)) }))
     .filter((x) => x.commands.length);
   for (const { r, commands } of recipeCommandSets.filter((x) => !x.r.pinned)) {
     const key = commands.join("; ");
@@ -276,7 +328,7 @@ function memoryCurationCandidates(cwd: string, maxActiveSessionRecaps = 12): Mem
 
   const recapLimit = (scope: MemoryScope) => scope === "project" ? maxActiveSessionRecaps : Math.max(8, maxActiveSessionRecaps);
   const recapsByScope = new Map<MemoryScope, MemoryRecord[]>();
-  for (const r of active.filter((x) => x.kind === "session_recap" && !x.pinned)) {
+  for (const r of active.filter((x) => x.kind === "session_recap" && !x.pinned && !(x.tags ?? []).includes("prune-rollup"))) {
     const arr = recapsByScope.get(r.scope) ?? [];
     arr.push(r);
     recapsByScope.set(r.scope, arr);
@@ -401,26 +453,20 @@ export function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResu
     staleIds.add(key);
     if (!staleReasons.has(key)) staleReasons.set(key, reason);
   };
-  const bySubject = new Map<string, MemoryRecord[]>();
   for (const r of active) {
     const hygieneReason = staleReasonForMemory(cwd, r);
     if (hygieneReason) markStale(r, hygieneReason);
-    const key = `${r.scope}:${r.kind}:${r.subject.toLowerCase()}`;
-    const arr = bySubject.get(key) ?? [];
-    arr.push(r);
-    bySubject.set(key, arr);
   }
-  let duplicateGroups = 0;
-  for (const group of bySubject.values()) {
-    if (group.length < 2) continue;
-    duplicateGroups++;
-    group.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    for (const r of group.slice(1)) markStale(r, "duplicate-subject");
+  const duplicateGroupsFound = duplicateMemoryGroups(active);
+  let duplicateGroups = duplicateGroupsFound.length;
+  for (const duplicate of duplicateGroupsFound) {
+    duplicate.records.sort(preferredMemoryKeeper);
+    for (const r of duplicate.records.slice(1)) markStale(r, duplicate.reason);
   }
   const recipeGroups = new Map<string, MemoryRecord[]>();
   const recipeCommandSets = active
     .filter((x) => x.kind === "recipe")
-    .map((r) => ({ r, commands: recipeCommandFamilyKeys(r.content).sort() }))
+    .map((r) => ({ r, commands: recipeCommandFamilyKeys(r.content).sort((a, b) => a.localeCompare(b)) }))
     .filter((x) => x.commands.length);
   for (const { r, commands } of recipeCommandSets.filter((x) => !x.r.pinned)) {
     const key = commands.join("; ");
@@ -431,7 +477,7 @@ export function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResu
   for (const group of recipeGroups.values()) {
     if (group.length < 2) continue;
     duplicateGroups++;
-    group.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    group.sort(preferredMemoryKeeper);
     for (const r of group.slice(1)) markStale(r, "duplicate-command-recipe");
   }
   for (const current of recipeCommandSets.filter((x) => !x.r.pinned)) {
@@ -445,7 +491,7 @@ export function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResu
   }
   const recapLimit = (scope: MemoryScope) => scope === "project" ? maxActiveSessionRecaps : Math.max(8, maxActiveSessionRecaps);
   const recapsByScope = new Map<MemoryScope, MemoryRecord[]>();
-  for (const r of active.filter((x) => x.kind === "session_recap" && !x.pinned)) {
+  for (const r of active.filter((x) => x.kind === "session_recap" && !x.pinned && !(x.tags ?? []).includes("prune-rollup"))) {
     const arr = recapsByScope.get(r.scope) ?? [];
     arr.push(r);
     recapsByScope.set(r.scope, arr);
@@ -457,6 +503,30 @@ export function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResu
   }
   const oldRecaps = projectRecaps.slice(maxActiveSessionRecaps).filter((r) => !staleReasonForMemory(cwd, r));
   const now = nowIso();
+  let rollupCreated: MemoryRecord | undefined;
+  if (oldRecaps.length >= 3) {
+    const rolledUpKeys = oldRecaps.map(recordKey);
+    const rollupId = stableId("session_recap", "rolled up older project sessions", rolledUpKeys.join("|"));
+    for (const prior of active.filter((r) => (r.tags ?? []).includes("prune-rollup") && r.id !== rollupId)) {
+      markStale(prior, "superseded-session-rollup");
+    }
+    const themes = oldRecaps.slice(0, 4).map(recapRollupFragment).filter(Boolean);
+    rollupCreated = {
+      id: rollupId,
+      schemaVersion: 1,
+      scope: "project",
+      kind: "session_recap",
+      subject: "rolled up older project sessions",
+      content: `Rolled up ${oldRecaps.length} older project sessions: ${themes.join(" | ")}`,
+      tags: ["prune-rollup", "session-import", "recap"],
+      filePaths: [...new Set(oldRecaps.flatMap((r) => r.filePaths ?? []))].slice(0, 4),
+      status: "active",
+      salience: 2,
+      evidence: { rolledUp: rolledUpKeys, prunedAt: now },
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
   const activeByKey = new Map(active.map((r) => [recordKey(r), r]));
   const updates: MemoryRecord[] = [];
   for (const key of staleIds) {
@@ -470,26 +540,7 @@ export function pruneMemory(cwd: string, maxActiveSessionRecaps = 12): PruneResu
       updatedAt: now,
     });
   }
-  let rollupCreated: MemoryRecord | undefined;
-  if (oldRecaps.length >= 3) {
-    const content = `Rolled up ${oldRecaps.length} older project session recaps. Recent themes: ${oldRecaps.slice(0, 8).map((r) => compactText(r.content, 120)).join(" | ")}`;
-    rollupCreated = {
-      id: stableId("session_recap", "rolled up older project sessions", oldRecaps.map(recordKey).join("|")),
-      schemaVersion: 1,
-      scope: "project",
-      kind: "session_recap",
-      subject: "rolled up older project sessions",
-      content,
-      tags: ["prune-rollup", "session-import", "recap"],
-      filePaths: [...new Set(oldRecaps.flatMap((r) => r.filePaths ?? []))].slice(0, 16),
-      status: "active",
-      salience: 2,
-      evidence: { rolledUp: oldRecaps.map(recordKey), prunedAt: now },
-      createdAt: now,
-      updatedAt: now,
-    };
-    updates.push(rollupCreated);
-  }
+  if (rollupCreated) updates.push(rollupCreated);
   const result = appendRecordsBatch(cwd, updates);
   const writtenKeys = new Set(result.records.map(recordKey));
   if (rollupCreated && !writtenKeys.has(recordKey(rollupCreated))) rollupCreated = undefined;

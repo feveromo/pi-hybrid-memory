@@ -1,4 +1,4 @@
-import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -310,13 +310,13 @@ export function registerMemoryCommands(
       const load = () => activeRecords(latestRecordsForCwd(ctx.cwd))
         .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.salience - a.salience || b.updatedAt.localeCompare(a.updatedAt));
       let records = load();
-      await ctx.ui.custom((tui, theme, _kb, done) => ({
+      await ctx.ui.custom((tui, theme, keybindings, done) => ({
         render: (width: number) => buildReviewLines(records, selected, theme, width),
         invalidate: () => {},
         handleInput: (data: string) => {
-          if (data === "q" || data === "Q" || data === "\x1b") return done(undefined);
-          if (data === "j" || data === "\x1b[B") selected = Math.min(records.length - 1, selected + 1);
-          else if (data === "k" || data === "\x1b[A") selected = Math.max(0, selected - 1);
+          if (data === "q" || data === "Q" || keybindings.matches(data, "tui.select.cancel")) return done(undefined);
+          if (data === "j" || keybindings.matches(data, "tui.select.down")) selected = Math.min(records.length - 1, selected + 1);
+          else if (data === "k" || keybindings.matches(data, "tui.select.up")) selected = Math.max(0, selected - 1);
           else if (records[selected] && ["p", "u", "s", "d"].includes(data)) {
             const rec = records[selected]!;
             const patch: Partial<MemoryRecord> = data === "p" ? { pinned: true } : data === "u" ? { pinned: false } : data === "s" ? { status: "stale" } : { status: "done" };

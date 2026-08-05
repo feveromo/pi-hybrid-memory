@@ -54,9 +54,10 @@
     "test:fixture": "node scripts/fixture-test.mjs",
     "benchmark": "node scripts/benchmark.mjs",
     "typecheck": "tsc --noEmit",
-    "validate": "npm test && npm run smoke:load",
+    "validate": "npm test && npm run smoke:load && npm run smoke:configured",
     "release:check": "npm run validate && npm audit --audit-level=high && npm pack --dry-run",
     "smoke:load": "node scripts/smoke-load.mjs",
+    "smoke:configured": "node scripts/smoke-configured.mjs",
     "smoke": "pi --no-session --no-extensions -e . -p --model openai-codex/gpt-5.4-mini 'Reply exactly: pi-hybrid-memory-ok'"
   }
 }

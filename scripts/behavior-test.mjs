@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { Key, matchesKey } from '@earendil-works/pi-tui';
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname);
 const tempRoot = mkdtempSync(join(tmpdir(), 'pi-hybrid-memory-behavior-'));
@@ -18,6 +19,14 @@ mkdirSync(sessionRoot, { recursive: true });
 const moduleFile = join(repoRoot, 'extensions', 'hybrid-memory.ts');
 const extension = (await import(pathToFileURL(moduleFile).href)).default;
 
+function parseJson(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Invalid JSON in ${label}`, { cause: error });
+  }
+}
+
 function projectMemoryDir(cwd) {
   return join(cwd, '.pi', 'hybrid-memory');
 }
@@ -27,10 +36,10 @@ function readRecords(cwd, scope = 'project') {
     ? join(tempHome, '.pi', 'agent', 'memory', 'records.jsonl')
     : join(projectMemoryDir(cwd), 'records.jsonl');
   if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf8').split(/\n+/).filter(Boolean).map((line) => JSON.parse(line));
+  return readFileSync(file, 'utf8').split(/\n+/).filter(Boolean).map((line, index) => parseJson(line, `${file}:${index + 1}`));
 }
 
-function makeHarness(cwd, sessionFile) {
+function makeHarness(cwd, sessionFile, options = {}) {
   const commands = new Map();
   const tools = new Map();
   let activeTools = [];
@@ -47,7 +56,7 @@ function makeHarness(cwd, sessionFile) {
       setStatus: (key, value) => statuses.push({ key, value }),
       setWidget: (key, value) => widgets.push({ key, value }),
       notify: (message, level = 'info') => notifications.push({ message, level }),
-      custom: async () => undefined,
+      custom: options.custom ?? (async () => undefined),
     },
   };
   const pi = {
@@ -95,6 +104,47 @@ async function injectedForPrompt(h, prompt) {
   const messages = context.find((result) => result?.messages)?.messages ?? [];
   const memory = messages.find((message) => message.role === 'custom' && message.customType === 'hybrid-memory-context');
   return String(memory?.content ?? '');
+}
+
+// Review navigation should recognize enhanced terminal arrow sequences through Pi's keybindings.
+{
+  const cwd = makeProject('review-arrow-navigation');
+  const screens = [];
+  const theme = { fg: (_color, text) => text, bg: (_color, text) => text, bold: (text) => text };
+  const h = makeHarness(cwd, undefined, {
+    custom: async (factory) => {
+      let component;
+      const tui = { requestRender: () => screens.push(component.render(120)) };
+      const keybindings = {
+        matches: (data, action) => {
+          if (action === 'tui.select.down') return matchesKey(data, Key.down);
+          if (action === 'tui.select.up') return matchesKey(data, Key.up);
+          return action === 'tui.select.cancel' && matchesKey(data, Key.escape);
+        },
+      };
+      component = factory(tui, theme, keybindings, () => {});
+      screens.push(component.render(120));
+      component.handleInput('\x1b[1;1B');
+    },
+  });
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'decision',
+    subject: 'alpha review target',
+    content: 'Alpha review target should start selected',
+    salience: 5,
+  });
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'decision',
+    subject: 'beta review target',
+    content: 'Beta review target should be selected after arrow down',
+    salience: 4,
+  });
+  await h.command('hmemory-review');
+  const detailSubject = (screen) => screen.find((line) => line.includes('subject ')) ?? '';
+  assert.match(detailSubject(screens[0]), /alpha review target/, 'review should start on the highest-ranked record');
+  assert.match(detailSubject(screens.at(-1)), /beta review target/, 'enhanced arrow-down input should move the review selection');
 }
 
 // Pinned status should not override done/stale/superseded suppression.
@@ -470,12 +520,16 @@ async function injectedForPrompt(h, prompt) {
   assert(first.details.written > 0, 'first stable session import should write records');
 
   const updatedLines = [...baseLines];
-  updatedLines.splice(3, 0, { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'read', arguments: { path: 'src/new.ts' } }] } });
+  updatedLines.splice(3, 0,
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'read', arguments: { path: 'src/new.ts' } }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', name: 'edit', arguments: { path: 'src/changed.ts' } }] } });
   writeFileSync(sessionFile, updatedLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf8');
   const second = await h.tool('hybrid_memory_import_sessions', { sessionPath: sessionFile });
   const recapHeads = readRecords(cwd, 'project').filter((r) => r.kind === 'session_recap' && r.subject === 'session meaningful-update-session');
   assert.equal(second.details.written, 1, 'changed session file paths should append a refreshed record head');
+  assert.equal(recapHeads.at(-1).filePaths[0], 'src/changed.ts', 'session recaps should prioritize modified files over incidental reads');
   assert(recapHeads.at(-1).filePaths.includes('src/new.ts'), 'refreshed session recap should retain updated file path metadata');
+  assert.equal(recapHeads.at(-1).createdAt, '2026-01-01T00:00:00.000Z', 'session recaps should preserve the source session start time');
 }
 
 // Hand-edited JSONL records should be normalized before stats/search use them.
@@ -535,7 +589,7 @@ async function injectedForPrompt(h, prompt) {
   assert(exact.includes('src/hybrid-memory.ts'), 'path/symbol prompts should still auto-inject repo-map matches');
 }
 
-// Injection truncation and dense path suffixes should read cleanly.
+// Injection truncation and path suffixes should stay compact and type-aware.
 {
   const cwd = makeProject('polished-injection-omissions');
   const h = makeHarness(cwd);
@@ -550,10 +604,98 @@ async function injectedForPrompt(h, prompt) {
       salience: 5,
     });
   }
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'codebase_note',
+    subject: 'polished path evidence',
+    content: 'Polished injection path evidence belongs to a codebase note',
+    filePaths: ['src/one.ts', 'src/two.ts', 'src/three.ts', 'src/four.ts', 'src/five.ts', 'src/six.ts'],
+    pinned: true,
+    salience: 5,
+  });
   const injected = await injectedForPrompt(h, 'polished preference injection display');
   assert(injected.includes('…1 additional lower-ranked record omitted'), 'truncation should explain how many lower-ranked records were omitted');
   assert(!injected.includes('…truncated'), 'injection should avoid abrupt raw truncated markers');
-  assert(injected.includes('one.ts, two.ts, three.ts, four.ts, five.ts; 1 more path'), 'long file suffixes should cap inline paths and summarize the rest');
+  assert(!injected.includes('files: one.ts'), 'decision memories should not expose loosely attached file metadata');
+  assert(injected.includes('src/one.ts, src/two.ts, src/three.ts; 3 more paths'), 'codebase notes should retain a compact path suffix');
+}
+
+// Injection should prioritize durable guidance, reject path-only recap matches, and avoid unrelated active work.
+{
+  const cwd = makeProject('calibrated-memory-selection');
+  const h = makeHarness(cwd);
+  const preference = await h.tool('hybrid_memory_remember', {
+    scope: 'user',
+    kind: 'preference',
+    subject: 'lunar otter ranking guidance',
+    content: 'Lunar otter retrieval should prefer explicit user guidance',
+    filePaths: ['/tmp/noisy-preference-source.ts'],
+    salience: 3,
+  });
+  const recap = await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'session_recap',
+    subject: 'lunar otter session',
+    content: 'Prior session (.): lunar otter retrieval ranking. Outcomes: Done and validated.',
+    salience: 5,
+  });
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'session_recap',
+    subject: 'old settings session',
+    content: 'Prior session (.): unrelated settings cleanup. Outcomes: Done.',
+    filePaths: ['src/lunar-otter.ts'],
+    salience: 5,
+  });
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'work_item',
+    subject: 'unrelated cleanup queue',
+    content: 'Run the unrelated cleanup queue',
+    salience: 5,
+  });
+  await h.tool('hybrid_memory_remember', {
+    scope: 'project',
+    kind: 'work_item',
+    subject: 'lunar otter calibration',
+    content: 'Finish lunar otter ranking calibration',
+    salience: 4,
+  });
+  const prompt = 'inspect src/lunar-otter.ts and finish lunar otter ranking';
+  const injected = await injectedForPrompt(h, prompt);
+  assert(injected.includes('Lunar otter retrieval should prefer explicit user guidance'), 'matching explicit user guidance should be injected');
+  assert(!injected.includes('noisy-preference-source.ts'), 'preference injection should hide incidental file metadata');
+  assert(!injected.includes('unrelated settings cleanup'), 'session recaps should not qualify from file paths alone');
+  assert(!injected.includes('Run the unrelated cleanup queue'), 'unrelated unpinned work items should not be injected by default');
+  assert(injected.includes('Finish lunar otter ranking calibration'), 'directly relevant active work should still be injected');
+
+  const explained = await h.tool('hybrid_memory_explain', { query: prompt });
+  const candidateIds = explained.details.candidates.map((candidate) => candidate.id);
+  assert(candidateIds.indexOf(`user:${preference.details.id}`) < candidateIds.indexOf(`project:${recap.details.id}`), 'explicit preferences should outrank matching session recaps');
+}
+
+// Near-identical durable records should collapse without merging numbered or materially distinct records.
+{
+  const cwd = makeProject('semantic-injection-dedupe');
+  const h = makeHarness(cwd);
+  await h.tool('hybrid_memory_remember', {
+    scope: 'user',
+    kind: 'preference',
+    subject: 'always use Ghostty terminal',
+    content: 'Always use Ghostty terminal',
+    pinned: true,
+    salience: 5,
+  });
+  await h.tool('hybrid_memory_remember', {
+    scope: 'user',
+    kind: 'preference',
+    subject: 'prefer the Ghostty terminal',
+    content: 'Prefer the Ghostty terminal',
+    pinned: true,
+    salience: 4,
+  });
+  const injected = await injectedForPrompt(h, 'Ghostty terminal preference');
+  assert.equal((injected.match(/Ghostty/g) ?? []).length, 1, 'near-identical preference wording should produce one injected line');
 }
 
 // Repo-map matches should be labeled as search hints and filter junk symbols.
@@ -604,6 +746,69 @@ async function injectedForPrompt(h, prompt) {
   const latest = readRecords(cwd, 'project').filter((r) => r.id === remembered.details.id).at(-1);
   assert.equal(latest.status, 'stale', 'changed file should mark related codebase_note stale');
   assert.match(JSON.stringify(latest.evidence), /codebase-note-file-changed:src\/tracked\.ts/, 'stale reason should name the changed file');
+}
+
+// Old unpinned work and recap records should retire automatically while pinned work remains active.
+{
+  const cwd = makeProject('temporal-memory-staleness');
+  const dir = projectMemoryDir(cwd);
+  mkdirSync(dir, { recursive: true });
+  const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+  const records = [
+    {
+      id: 'old-work-item', schemaVersion: 1, scope: 'project', kind: 'work_item', subject: 'old active task',
+      content: 'Old active task should retire', status: 'active', salience: 3, pinned: false, createdAt: old, updatedAt: old,
+    },
+    {
+      id: 'old-session-recap', schemaVersion: 1, scope: 'project', kind: 'session_recap', subject: 'old recap',
+      content: 'Prior session (.): old recap topic. Outcomes: Done.', tags: ['session-import', 'recap'], status: 'active', salience: 2, pinned: false, createdAt: old, updatedAt: old,
+    },
+    {
+      id: 'pinned-old-work', schemaVersion: 1, scope: 'project', kind: 'work_item', subject: 'pinned old task',
+      content: 'Pinned old task remains active', status: 'active', salience: 4, pinned: true, createdAt: old, updatedAt: old,
+    },
+  ];
+  writeFileSync(join(dir, 'records.jsonl'), records.map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
+  const h = makeHarness(cwd);
+  await h.command('hmemory-prune');
+  const latest = readRecords(cwd, 'project');
+  assert.equal(latest.filter((r) => r.id === 'old-work-item').at(-1).status, 'stale', 'work items inactive for 30 days should become stale');
+  assert.match(JSON.stringify(latest.filter((r) => r.id === 'old-work-item').at(-1).evidence), /inactive-work-item-30d/, 'aged work should retain a precise stale reason');
+  assert.equal(latest.filter((r) => r.id === 'old-session-recap').at(-1).status, 'stale', 'session recaps older than 45 days should become stale');
+  assert.match(JSON.stringify(latest.filter((r) => r.id === 'old-session-recap').at(-1).evidence), /old-session-recap-45d/, 'aged recaps should retain a precise stale reason');
+  assert.equal(latest.filter((r) => r.id === 'pinned-old-work').at(-1).status, 'active', 'pinned work should be exempt from temporal retirement');
+}
+
+// Count-based recap pruning should produce one compact rollup with bounded path metadata.
+{
+  const cwd = makeProject('session-recap-rollup');
+  const dir = projectMemoryDir(cwd);
+  mkdirSync(dir, { recursive: true });
+  const now = new Date().toISOString();
+  const recaps = Array.from({ length: 6 }, (_, index) => ({
+    id: `rollup-recap-${index}`,
+    schemaVersion: 1,
+    scope: 'project',
+    kind: 'session_recap',
+    subject: `rollup recap ${index}`,
+    content: `Prior session (.): focused topic ${index}. Outcomes: Implemented and validated item ${index}. Tools: read, edit.`,
+    tags: ['session-import', 'recap'],
+    filePaths: [`src/topic-${index}.ts`],
+    status: 'active',
+    salience: 2,
+    pinned: false,
+    createdAt: now,
+    updatedAt: new Date(Date.now() - index * 1000).toISOString(),
+  }));
+  writeFileSync(join(dir, 'records.jsonl'), recaps.map((record) => JSON.stringify(record)).join('\n') + '\n', 'utf8');
+  const h = makeHarness(cwd);
+  await h.command('hmemory-prune', '3');
+  const latest = readRecords(cwd, 'project');
+  const rollups = latest.filter((r) => (r.tags ?? []).includes('prune-rollup') && r.status === 'active');
+  assert.equal(rollups.length, 1, 'prune should keep one active recap rollup');
+  assert(rollups[0].content.length < 500, 'session recap rollups should stay concise');
+  assert(!rollups[0].content.includes('Tools:'), 'session recap rollups should omit tool chatter');
+  assert(rollups[0].filePaths.length <= 4, 'session recap rollups should bound aggregated file paths');
 }
 
 // Prompt injection should stay polished: no duplicated recipe prefixes or near-identical command recipes.
@@ -675,22 +880,28 @@ async function injectedForPrompt(h, prompt) {
   assert.match(JSON.stringify(latest.evidence), /context-inspection-recap/, 'stale reason should name context-inspection-recap');
 }
 
-// Repeated session recaps about the same commit should collapse to one injected line.
+// Repeated session recaps about the same commit should collapse in injection and curation.
 {
   const cwd = makeProject('duplicate-session-commit-injection');
   const h = makeHarness(cwd);
-  for (const subject of ['first commit recap', 'second commit recap']) {
+  const subjects = ['first commit recap', 'second commit recap'];
+  for (const [index, subject] of subjects.entries()) {
     await h.tool('hybrid_memory_remember', {
       scope: 'project',
       kind: 'session_recap',
       subject,
-      content: `Prior session (.): settings panel polish. Outcomes: Done and validated. Commit: abc1234 Stabilize settings panel height.`,
+      content: `Prior session (.): settings ${index === 0 ? 'panel polish' : 'responsive layout'} update. Outcomes: Done and validated. Commit: abc1234 Stabilize settings panel height.`,
       filePaths: ['extensions/hybrid-memory.ts'],
       salience: 5,
     });
   }
   const injected = await injectedForPrompt(h, 'settings panel commit abc1234');
   assert.equal((injected.match(/abc1234/g) ?? []).length, 1, 'session recaps mentioning the same commit should dedupe in injection');
+  await h.command('hmemory-prune');
+  const latest = subjects.map((subject) => readRecords(cwd, 'project').filter((r) => r.subject === subject).at(-1));
+  const retired = latest.find((record) => record.status === 'stale');
+  assert(retired, 'prune should retire one repeated commit recap');
+  assert.match(JSON.stringify(retired.evidence), /duplicate-session-commit/, 'duplicate commit curation should record its reason');
 }
 
 // Pinned user decisions/facts should render in their own global section and generated context.
@@ -777,7 +988,7 @@ async function injectedForPrompt(h, prompt) {
     subject: 'beta configured preference',
     content: 'Beta configured preference should be hidden by the section limit',
     pinned: true,
-    salience: 5,
+    salience: 4,
   });
   const injected = await injectedForPrompt(h, 'configured preference lookup');
   assert(injected.includes('Alpha configured preference'), 'configured section limit should still include the first preference');
@@ -799,7 +1010,8 @@ async function injectedForPrompt(h, prompt) {
   const start = performance.now();
   await h.command('hmemory-repomap');
   const elapsedMs = performance.now() - start;
-  const map = JSON.parse(readFileSync(join(projectMemoryDir(cwd), 'repomap.json'), 'utf8'));
+  const mapFile = join(projectMemoryDir(cwd), 'repomap.json');
+  const map = parseJson(readFileSync(mapFile, 'utf8'), mapFile);
   assert.equal(map.files.length, 1500, 'large repo smoke should obey the default repo-map file cap');
   assert(elapsedMs < 8000, `large repo-map smoke should stay bounded, took ${elapsedMs.toFixed(0)}ms`);
 }
