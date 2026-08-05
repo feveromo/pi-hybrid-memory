@@ -2,8 +2,17 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
+import { configuredPackage, parsePiList } from './smoke-configured.mjs';
+
 const root = resolve(new URL('..', import.meta.url).pathname);
-const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+function readJson(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    throw new Error(`Unable to parse JSON from ${path}`, { cause: error });
+  }
+}
+const packageJson = readJson(join(root, 'package.json'));
 const entry = packageJson.pi?.extensions?.[0];
 
 assert.equal(entry, './extensions/hybrid-memory.ts', 'package should expose the stable Pi extension entrypoint');
@@ -14,6 +23,9 @@ for (const dependency of ['@earendil-works/pi-ai', '@earendil-works/pi-coding-ag
   assert(packageJson.devDependencies?.[dependency], `${dependency} should be pinned for reproducible development`);
 }
 assert.match(packageJson.scripts?.test ?? '', /typecheck/, 'the default test gate should include TypeScript validation');
+assert.match(packageJson.scripts?.validate ?? '', /smoke:load.*smoke:configured/, 'validation should run isolated and configured Pi smoke tests in order');
+const listedPackages = parsePiList('User packages:\n  git:github.com/feveromo/pi-hybrid-memory\n    /tmp/pi-hybrid-memory\n');
+assert.equal(configuredPackage(listedPackages, 'pi-hybrid-memory', 'pi-hybrid-memory')?.path, '/tmp/pi-hybrid-memory', 'configured smoke should resolve the active package path from pi list');
 
 const entrySource = readFileSync(join(root, entry), 'utf8');
 assert.match(entrySource, /runtime\/registration\.ts/, 'the stable Pi entrypoint should stay thin');

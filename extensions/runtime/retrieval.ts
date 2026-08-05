@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 
-import { searchStatusEnum, type MemoryKind, type MemoryRecord, type MemoryScope, type MemoryStatus } from "../core/domain.ts";
+import type { searchStatusEnum, MemoryKind, MemoryRecord, MemoryScope, MemoryStatus } from "../core/domain.ts";
 import { isMemoryArtifactPath, redactSecrets, sanitizeFilePaths } from "../core/privacy.ts";
 import { compactText } from "../core/text.ts";
 import { findProjectRoot, isActiveRecord, latestRecordsForCwd, pathContains, recordKey, recordStatus } from "./foundation.ts";
@@ -89,10 +89,14 @@ export function strongQueryTerms(query: string) {
   return distinctiveQueryTerms(query).filter((term) => term.length >= 7 || /[./:_-]/.test(term));
 }
 
-function recordDirectlyMatchesTerms(record: MemoryRecord, terms: string[]) {
+type RecordMatchFields = "text" | "all";
+
+function recordDirectlyMatchesTerms(record: MemoryRecord, terms: string[], fields: RecordMatchFields = "all") {
   if (!terms.length) return false;
-  const direct = [recordKey(record), record.id, record.kind, record.subject, record.content, ...(record.tags ?? []), ...(sanitizeFilePaths(record.filePaths) ?? []), ...(record.symbols ?? [])].join(" ").toLowerCase();
-  return terms.some((term) => searchTermVariants(term).some((variant) => direct.includes(variant)));
+  const direct = [recordKey(record), record.id, record.kind, record.subject, record.content, ...(record.tags ?? [])];
+  if (fields === "all") direct.push(...(sanitizeFilePaths(record.filePaths) ?? []), ...(record.symbols ?? []));
+  const haystack = direct.join(" ").toLowerCase();
+  return terms.some((term) => searchTermVariants(term).some((variant) => haystack.includes(variant)));
 }
 
 function recordDirectlyMatchesQuery(record: MemoryRecord, query: string) {
@@ -108,6 +112,15 @@ export function shouldIncludeSearchHit(cwd: string, record: MemoryRecord, query:
     return recordHasProjectPath(cwd, record) || recordDirectlyMatchesQuery(record, query);
   }
   return true;
+}
+
+export function shouldIncludeInjectionHit(cwd: string, record: MemoryRecord, query: string, preparedStrongTerms = strongQueryTerms(query)) {
+  if (record.kind === "session_recap" || record.kind === "recipe") {
+    const distinctiveTerms = distinctiveQueryTerms(query);
+    if (!distinctiveTerms.length || !recordDirectlyMatchesTerms(record, distinctiveTerms, "text")) return false;
+    if (preparedStrongTerms.length && !recordDirectlyMatchesTerms(record, preparedStrongTerms, "text")) return false;
+  }
+  return shouldIncludeSearchHit(cwd, record, query, preparedStrongTerms);
 }
 
 function termLooksExactIdentifier(term: string) {
@@ -143,13 +156,22 @@ export function displayRepoSymbols(symbols: string[], max: number) {
   return out;
 }
 
-const recordHaystackCache = new WeakMap<MemoryRecord, string>();
+const recordTextHaystackCache = new WeakMap<MemoryRecord, string>();
+const KIND_SCORE_ADJUSTMENT: Partial<Record<MemoryKind, number>> = {
+  preference: 6,
+  decision: 4,
+  project_fact: 4,
+  work_item: 3,
+  codebase_note: 2,
+  recipe: -1,
+  session_recap: -4,
+};
 
-function recordHaystack(record: MemoryRecord) {
-  const cached = recordHaystackCache.get(record);
+function recordTextHaystack(record: MemoryRecord) {
+  const cached = recordTextHaystackCache.get(record);
   if (cached !== undefined) return cached;
-  const value = [recordKey(record), record.id, record.kind, record.subject, record.content, ...(record.tags ?? []), ...(record.filePaths ?? []), ...(record.symbols ?? [])].join(" ").toLowerCase();
-  recordHaystackCache.set(record, value);
+  const value = [recordKey(record), record.id, record.kind, record.subject, record.content].join(" ").toLowerCase();
+  recordTextHaystackCache.set(record, value);
   return value;
 }
 
@@ -160,13 +182,16 @@ export function prepareSearchTerms(query: string): PreparedSearchTerm[] {
 }
 
 function lexicalRecordScore(record: MemoryRecord, terms: readonly PreparedSearchTerm[]) {
-  const haystack = recordHaystack(record);
+  const haystack = recordTextHaystack(record);
+  const pathWeightScale = record.kind === "codebase_note" || record.kind === "work_item" ? 0.5 : record.kind === "recipe" ? 0.2 : 0;
   let lexicalScore = 0;
   for (const { variants, weight } of terms) {
     if (variants.some((variant) => haystack.includes(variant))) lexicalScore += weight;
-    if (variants.some((variant) => record.filePaths?.some((path) => path.toLowerCase().includes(variant)))) lexicalScore += Math.max(5, weight);
+    if (pathWeightScale > 0 && variants.some((variant) => record.filePaths?.some((path) => path.toLowerCase().includes(variant)))) {
+      lexicalScore += Math.max(1, Math.ceil(weight * pathWeightScale));
+    }
     if (variants.some((variant) => record.symbols?.some((symbol) => symbol.toLowerCase() === variant))) lexicalScore += Math.max(4, Math.ceil(weight / 2));
-    if (variants.some((variant) => record.tags?.some((tag) => tag.toLowerCase() === variant))) lexicalScore += Math.max(3, Math.ceil(weight / 2));
+    if (variants.some((variant) => record.tags?.some((tag) => tag.toLowerCase() === variant))) lexicalScore += Math.max(2, Math.ceil(weight / 2));
   }
   return lexicalScore;
 }
@@ -182,7 +207,7 @@ export function scoreRecord(record: MemoryRecord, cwd: string, terms: readonly P
   const active = isActiveRecord(record);
   const lexicalScore = lexicalRecordScore(record, terms);
   if (lexicalScore <= 0) return shouldInjectPinnedByDefault(cwd, record) ? 12 + record.salience : 0;
-  let score = lexicalScore;
+  let score = lexicalScore + (KIND_SCORE_ADJUSTMENT[record.kind] ?? 0);
   if (active) score += 4;
   if (record.pinned && active) score += 12;
   if (record.status === "done" || record.status === "stale") score -= 6;

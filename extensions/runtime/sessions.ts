@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, readdirSync, lstatSync, realpathSync, openSync, readSync, closeSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, lstatSync, realpathSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 
-import { type MemoryRecord } from "../core/domain.ts";
+import type { MemoryRecord } from "../core/domain.ts";
 import { isMemoryArtifactPath, isSensitivePath, redactSecrets, sanitizeFilePaths, SECRET_REPLACEMENT } from "../core/privacy.ts";
 import { compactText, textParts } from "../core/text.ts";
 
@@ -165,7 +165,8 @@ export function isUsefulProjectCommand(cmd: string) {
 function usefulProjectCommandParts(cmd: string) {
   const parts = cmd.split(/\s*(?:&&|\|\||;)\s*/).map((part) => part.trim()).filter(Boolean);
   const usefulParts = parts.filter(isUsefulProjectCommand);
-  return usefulParts.length ? usefulParts : isUsefulProjectCommand(cmd) ? [cmd.trim()] : [];
+  if (usefulParts.length) return usefulParts;
+  return isUsefulProjectCommand(cmd) ? [cmd.trim()] : [];
 }
 
 function usefulProjectCommandSnippet(cmd: string) {
@@ -313,19 +314,29 @@ function extractSessionRecords(sessionFile: string, importCwd: string, options: 
   const header = entries.find((e) => e.type === "session") as { cwd?: string; timestamp?: string; id?: string } | undefined;
   const sessionCwd = typeof header?.cwd === "string" ? header.cwd : importCwd;
   const ts = nowIso();
+  const headerTimestamp = typeof header?.timestamp === "string" ? Date.parse(header.timestamp) : Number.NaN;
+  const sessionStartedAt = Number.isFinite(headerTimestamp) ? new Date(headerTimestamp).toISOString() : ts;
+  let sessionUpdatedAt = ts;
+  try {
+    sessionUpdatedAt = new Date(statSync(sessionFile).mtimeMs).toISOString();
+  } catch {
+    // Keep import time when the session file disappears during a concurrent cleanup.
+  }
   const userPrompts: string[] = [];
   const assistantTexts: string[] = [];
   const tools = new Set<string>();
   const commandHints = new Set<string>();
-  const files = new Set<string>();
+  const changedFiles = new Set<string>();
+  const referencedFiles = new Set<string>();
 
-  function collectFileHints(value: unknown) {
+  function collectFileHints(value: unknown, target: Set<string>) {
     if (!value || typeof value !== "object") return;
     const stack = [value as Record<string, unknown>];
     while (stack.length) {
-      const cur = stack.pop()!;
+      const cur = stack.pop();
+      if (!cur) continue;
       for (const [k, v] of Object.entries(cur)) {
-        if (["path", "file", "session", "cwd"].includes(k) && typeof v === "string" && (v.includes("/") || v.includes(".")) && !isSensitivePath(v)) files.add(redactSecrets(v));
+        if (["path", "file"].includes(k) && typeof v === "string" && (v.includes("/") || v.includes(".")) && !isSensitivePath(v)) target.add(redactSecrets(v));
         else if (Array.isArray(v)) for (const item of v) if (item && typeof item === "object") stack.push(item as Record<string, unknown>);
         else if (v && typeof v === "object") stack.push(v as unknown as Record<string, unknown>);
       }
@@ -346,21 +357,22 @@ function extractSessionRecords(sessionFile: string, importCwd: string, options: 
               const cmd = (call.arguments as { command?: unknown }).command;
               if (typeof cmd === "string" && cmd.length <= 220 && !/secret|token|password|api[_ -]?key/i.test(cmd)) commandHints.add(redactSecrets(cmd));
             }
-            collectFileHints(call.arguments);
+            const mutationTool = typeof call.name === "string" && /(?:^|[._-])(?:edit|write|patch|ast_grep_replace|rename_file)$/i.test(call.name);
+            collectFileHints(call.arguments, mutationTool ? changedFiles : referencedFiles);
           }
         }
       }
     }
-    collectFileHints(entry.details);
   }
 
   const subjectBase = header?.id ? `session ${header.id}` : `session ${sessionFile.split("/").pop()}`;
   const location = sessionLocationLabel(importCwd, sessionCwd);
   const recapPrompts = userPrompts.filter(isUserFacingSessionPrompt);
   const delegatedOnly = userPrompts.length > 0 && recapPrompts.length === 0;
-  const promptSummary = conciseList(recapPrompts.slice(0, 4), 3, 90).join(" | ");
+  const representativePrompts = recapPrompts.length <= 3 ? recapPrompts : [recapPrompts[0], ...recapPrompts.slice(-2)];
+  const promptSummary = conciseList([...new Set(representativePrompts)], 3, 90).join(" | ");
   const doneHints = conciseList(assistantTexts.filter((t) => /\b(done|built|implemented|fixed|validated|removed|installed)\b/i.test(t)).slice(-2), 2, 120);
-  const fileList = (sanitizeFilePaths([...files]) ?? []).filter((f) => !isMemoryArtifactPath(f)).slice(0, 8);
+  const fileList = (sanitizeFilePaths([...changedFiles, ...referencedFiles]) ?? []).filter((f) => !isMemoryArtifactPath(f)).slice(0, 8);
   const records: MemoryRecord[] = [];
 
   if ((promptSummary || doneHints.length) && !delegatedOnly) {
@@ -376,8 +388,8 @@ function extractSessionRecords(sessionFile: string, importCwd: string, options: 
       status: "active",
       salience: 2,
       evidence: { sessionFile, sessionCwd, importedAt: ts },
-      createdAt: ts,
-      updatedAt: ts,
+      createdAt: sessionStartedAt,
+      updatedAt: sessionUpdatedAt,
     });
   }
 
@@ -396,8 +408,8 @@ function extractSessionRecords(sessionFile: string, importCwd: string, options: 
       status: "active",
       salience: 3,
       evidence: { sessionFile, sessionCwd, importedAt: ts },
-      createdAt: ts,
-      updatedAt: ts,
+      createdAt: sessionStartedAt,
+      updatedAt: sessionUpdatedAt,
     });
   }
 
@@ -417,8 +429,8 @@ function extractSessionRecords(sessionFile: string, importCwd: string, options: 
       status: "active",
       salience: 3,
       evidence: { sessionFile, sessionCwd, importedAt: ts },
-      createdAt: ts,
-      updatedAt: ts,
+      createdAt: sessionStartedAt,
+      updatedAt: sessionUpdatedAt,
     });
   }
 
@@ -453,12 +465,15 @@ function sectionLines(summary: string, heading: string) {
 }
 
 function extractFilesBlock(summary: string, tag: "read-files" | "modified-files") {
-  const match = redactSecrets(summary).match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  const safeSummary = redactSecrets(summary);
+  const match = tag === "read-files"
+    ? safeSummary.match(/<read-files>([\s\S]*?)<\/read-files>/i)
+    : safeSummary.match(/<modified-files>([\s\S]*?)<\/modified-files>/i);
   if (!match?.[1]) return [];
   return sanitizeFilePaths(match[1].split("\n").map((line) => line.trim()).filter(Boolean)) ?? [];
 }
 
-function recordsFromSummary(cwd: string, summary: string, sourceType: "compaction" | "branch_summary", evidence: Record<string, unknown>) {
+function recordsFromSummary(summary: string, sourceType: "compaction" | "branch_summary", evidence: Record<string, unknown>) {
   const ts = nowIso();
   const filePaths = [...new Set([...extractFilesBlock(summary, "read-files"), ...extractFilesBlock(summary, "modified-files")])].slice(0, 16);
   const records: MemoryRecord[] = [];
@@ -522,7 +537,7 @@ function recordsFromSummary(cwd: string, summary: string, sourceType: "compactio
 
 export function mineSummary(cwd: string, summary: string | undefined, sourceType: "compaction" | "branch_summary", evidence: Record<string, unknown>) {
   if (!summary) return { extracted: 0, written: 0 };
-  const records = recordsFromSummary(cwd, summary, sourceType, evidence);
+  const records = recordsFromSummary(summary, sourceType, evidence);
   const result = appendRecordsBatch(cwd, records);
   return { extracted: records.length, written: result.written };
 }

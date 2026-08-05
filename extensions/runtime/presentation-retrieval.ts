@@ -7,7 +7,7 @@ import { compactText, textParts } from "../core/text.ts";
 
 import { REPO_STALENESS_CACHE_TTL_MS, RECIPE_DISPLAY_COMMAND_LIMIT, findProjectRoot, latestRecordsForCwd, isActiveRecord, activeRecords, recordKey } from "./foundation.ts";
 import { hybridMemoryConfig } from "./configuration.ts";
-import { displayFilePaths, recordDisplayFilePaths, injectedRecordFilePaths, strongQueryTerms, shouldIncludeSearchHit, prepareSearchTerms, scoreRecord, shouldInjectPinnedByDefault } from "./retrieval.ts";
+import { displayFilePaths, recordDisplayFilePaths, injectedRecordFilePaths, strongQueryTerms, shouldIncludeInjectionHit, prepareSearchTerms, scoreRecord, shouldInjectPinnedByDefault } from "./retrieval.ts";
 import { readRepoMap, repoMapStaleness, repoMapStalenessCached, repoExcerpt } from "./repo-context.ts";
 import { looksLikeContextInspectionText, normalizeCommandForDedupe, recipeCommandSnippets, recipeCommandFamilyKeys } from "./sessions.ts";
 import { memoryHealth, noisySessionRecapReason } from "./curation.ts";
@@ -174,7 +174,7 @@ export function memoryToolResultText(result: any) {
 export function memoryRecordToolLine(theme: any, r: MemoryRecord, maxSubject = 72, showId = false) {
   const pin = r.pinned ? `${memoryTheme(theme, "warning", "📌")} ` : "";
   const id = showId ? `${memoryTheme(theme, "accent", memoryToolPreview(recordKey(r), 44))} ` : "";
-  return `${pin}${memoryScopeChip(theme, r.scope)} ${memoryKindChip(theme, r.kind)} ${id}${memoryTheme(theme, "dim", `\"${memoryToolPreview(r.subject, maxSubject)}\"`)}`;
+  return `${pin}${memoryScopeChip(theme, r.scope)} ${memoryKindChip(theme, r.kind)} ${id}${memoryTheme(theme, "dim", `"${memoryToolPreview(r.subject, maxSubject)}"`)}`;
 }
 
 export function memoryToolFilesLine(theme: any, filePaths?: string[]) {
@@ -365,13 +365,34 @@ export function buildDashboardLines(cwd: string, theme: any, width: number, deta
 
 function injectionDedupeKey(r: MemoryRecord) {
   if (r.kind === "recipe") {
-    const families = recipeCommandFamilyKeys(r.content).sort();
+    const families = recipeCommandFamilyKeys(r.content).sort((a, b) => a.localeCompare(b));
     return families.length ? `recipe:${families.join("|")}` : `recipe:${normalizeCommandForDedupe(displayContent(r))}`;
   }
   if (r.kind === "session_recap") {
     return `session:${displaySessionRecap(r.content).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 180)}`;
   }
   return `${r.scope}:${r.kind}:${r.subject.toLowerCase()}:${compactText(displayContent(r).toLowerCase(), 180)}`;
+}
+
+const INJECTION_DEDUPE_STOP_WORDS = new Set([
+  "about", "active", "across", "after", "again", "also", "always", "before", "being", "current", "from", "have", "into", "keep", "memory", "only", "prefer", "project", "record", "should", "that", "the", "their", "this", "through", "use", "user", "when", "with",
+]);
+
+function injectionMeaningTokens(r: MemoryRecord) {
+  return new Set(`${r.subject} ${displayContent(r)}`
+    .toLowerCase()
+    .match(/[a-z0-9][a-z0-9_.:/-]*/g)
+    ?.filter((token) => !INJECTION_DEDUPE_STOP_WORDS.has(token)) ?? []);
+}
+
+function injectionMeaningsOverlap(a: MemoryRecord, b: MemoryRecord) {
+  if (a.scope !== b.scope || a.kind !== b.kind || a.kind === "recipe" || a.kind === "session_recap") return false;
+  const left = injectionMeaningTokens(a);
+  const right = injectionMeaningTokens(b);
+  if (!left.size || !right.size) return false;
+  let shared = 0;
+  for (const token of left) if (right.has(token)) shared++;
+  return left.size === right.size && shared >= 2 && shared === left.size;
 }
 
 function sessionRecapCommitKeys(r: MemoryRecord) {
@@ -389,9 +410,9 @@ function dedupeInjectionRecords(records: MemoryRecord[]) {
   const out: MemoryRecord[] = [];
   for (const r of records) {
     const key = injectionDedupeKey(r);
-    if (seen.has(key)) continue;
+    if (seen.has(key) || out.some((prior) => injectionMeaningsOverlap(r, prior))) continue;
     if (r.kind === "recipe") {
-      const families = recipeCommandFamilyKeys(r.content).sort();
+      const families = recipeCommandFamilyKeys(r.content).sort((a, b) => a.localeCompare(b));
       if (families.length && seenRecipeFamilies.some((prior) => families.every((cmd) => prior.has(cmd)))) continue;
       if (families.length) seenRecipeFamilies.push(new Set(families));
     }
@@ -406,10 +427,18 @@ function dedupeInjectionRecords(records: MemoryRecord[]) {
   return out;
 }
 
+function injectedFileLimit(r: MemoryRecord) {
+  if (r.kind === "codebase_note") return 3;
+  if (r.kind === "work_item") return 3;
+  if (r.kind === "session_recap") return 2;
+  if (r.kind === "recipe") return 2;
+  return 0;
+}
+
 function memoryLine(cwd: string, r: MemoryRecord) {
   const maxContent = r.kind === "session_recap" ? 240 : r.kind === "recipe" ? 220 : 320;
   const content = compactText(redactSecrets(displayContent(r)), maxContent);
-  const files = injectedRecordFilePaths(cwd, r, r.kind === "session_recap" ? 3 : r.kind === "recipe" ? 4 : 5);
+  const files = injectedRecordFilePaths(cwd, r, injectedFileLimit(r));
   const totalDisplayFiles = injectedRecordFilePaths(cwd, r, 24).length;
   const omitted = totalDisplayFiles - files.length;
   const fileSuffix = files.length
@@ -478,14 +507,14 @@ function selectInjectionRecords(cwd: string, prompt: string): InjectionSelection
   const hits: Array<{ record: MemoryRecord; score: number }> = [];
   for (const record of latestRecordsForCwd(cwd)) {
     const key = recordKey(record);
-    const isPinned = isActiveRecord(record) && (record.kind === "work_item" || shouldInjectPinnedByDefault(cwd, record));
+    const isPinned = shouldInjectPinnedByDefault(cwd, record);
     const score = scoreRecord(record, cwd, terms, root);
     if (isPinned) {
       merged.set(key, record);
       pinned.add(key);
       scores.set(key, score);
     }
-    if (isActiveRecord(record) && score > 0 && shouldIncludeSearchHit(cwd, record, safePrompt, strongTerms)) hits.push({ record, score });
+    if (isActiveRecord(record) && score > 0 && shouldIncludeInjectionHit(cwd, record, safePrompt, strongTerms)) hits.push({ record, score });
   }
   hits.sort((a, b) => b.score - a.score || b.record.updatedAt.localeCompare(a.record.updatedAt));
   for (const hit of hits.slice(0, 16)) {
@@ -493,7 +522,13 @@ function selectInjectionRecords(cwd: string, prompt: string): InjectionSelection
     merged.set(key, hit.record);
     scores.set(key, Math.max(scores.get(key) ?? 0, hit.score));
   }
-  return { records: [...merged.values()], scores, pinned };
+  const records = [...merged.values()].sort((a, b) => {
+    const scoreDelta = (scores.get(recordKey(b)) ?? 0) - (scores.get(recordKey(a)) ?? 0);
+    if (scoreDelta) return scoreDelta;
+    const pinDelta = Number(pinned.has(recordKey(b))) - Number(pinned.has(recordKey(a)));
+    return pinDelta || b.updatedAt.localeCompare(a.updatedAt);
+  });
+  return { records, scores, pinned };
 }
 
 export function buildInjection(cwd: string, prompt: string, config = hybridMemoryConfig(cwd), selection = selectInjectionRecords(cwd, prompt)) {
